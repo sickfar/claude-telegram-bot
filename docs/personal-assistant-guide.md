@@ -4,13 +4,15 @@ Some context: I'm [Fabrizio](https://fabrizio.so), [@linuz90 on X](https://x.com
 
 At Typefully, we fully embraced AI coding early on, and we use Claude Code (and Codex) extensively. But I also like to optimize and automate parts of my personal life.
 
-Things changed a lot with [Claude Code](https://claude.com/product/claude-code). In fact, while it's described as a coding agent, it's actually a powerful **general-purpose agent** when given the right instructions, context, and tools.
+Especially since the introduction of the Sonnet/Opus 4.5 models, [Claude Code](https://claude.com/product/claude-code) has become my AI coding assistant of choice.
 
-So I started **using it as a personal assistant, especially through Telegram** (which is what this project is about).
+I quickly realized that these models are actually very capable **general-purpose agents** when given the right instructions, context, and tools.
+
+After seeing my co-founder [Francesco](https://x.com/frankdilo) use Claude Code to handle tasks and emails, I started **using it as a personal assistant, especially through Telegram** (which is what this project is about).
 
 After some iteration, I landed on this system/setup:
 
-1. **I've created a "fab-dev" folder** with a CLAUDE.md that teaches Claude about me, my preferences, where my notes live, my workflows.
+1. **I've created a `fab-dev` folder** with a CLAUDE.md that teaches Claude about me, my preferences, where my notes live, my workflows.
 2. _OPTIONAL_: I've asked Claude to **[symlink](https://en.wikipedia.org/wiki/Symbolic_link) configuration files** into this new central folder, so I can edit them easily and improve my dev setup. For example, I symlinked ~/.claude/commands here, so I can ask Claude to add new commands which will be available everywhere. I also symlinked ~/.zshrc into this folder, so I can ask Claude to edit and improve my shell configuration too.
 3. _OPTIONAL_: **I've tracked the folder as a Git repository** so I can also easily version control it, or share it on multiple Macs in the future if I need it.
 4. **I set this "fab-dev" folder as the working directory** for this bot (via `CLAUDE_WORKING_DIR`).
@@ -29,9 +31,9 @@ For example, I wanted my assistant to summarize videos, so I asked it to create 
 
 ## CLAUDE.md is the Assistant's Brain
 
-The `CLAUDE.md` file in your personal assistant folder is the centerpiece of the setup.
+The `CLAUDE.md` file in my personal assistant `fab-dev` folder is the centerpiece of the setup.
 
-Since Claude runs by default with prompt permissions bypassed (more on this in [SECURITY.md](../SECURITY.md)), it can browse other folders, read and write files, and execute commands quite freely within the allowed paths.
+Since Claude runs by default with prompt permissions bypassed (more on this in [SECURITY.md](../SECURITY.md)), it can browse other folders, read and write files, and execute commands quite freely within the allowed paths (more on scripts and commands below).
 
 Here's a template based on my own setup:
 
@@ -59,6 +61,12 @@ This file provides guidance to Claude Code so it can act as [Your Name]'s person
 
 [Brief context about work, lifestyle, hobbies, etc.]
 
+**Personal context**: For detailed personal information (family, friends, preferences, etc.), read `~/Documents/Notes/Me/personal-context.md`. Reference this file when answering personal questions.
+
+**Life goals**: For high-level objectives and long-term goals, read `~/Documents/Notes/life-goals.md`.
+
+**Keeping context fresh**: When new personal information emerges during conversations (new friends, places, habits, preferences, life updates), proactively update `Me/personal-context.md`. When new life goals emerge, update `life-goals.md`.
+
 ## How to Assist
 
 - **Always check the date**: For time-sensitive questions, run `date` first
@@ -69,7 +77,7 @@ This file provides guidance to Claude Code so it can act as [Your Name]'s person
 
 ## Task Management
 
-Use the [Things/Todoist/etc.] MCP/script to read and write tasks. [this is highly dependent on your setup and what you ask Claude to build for you]
+Use the [Things/Todoist/etc.] MCP/script to read and write tasks.
 
 **When I ask "what's on my plate"**: Check both tasks AND calendar automatically.
 
@@ -78,20 +86,33 @@ Use the [Things/Todoist/etc.] MCP/script to read and write tasks. [this is highl
 - Unless specified, schedule new tasks for Today
 - Include relevant context in task description
 
-**Key projects:**
-- Work → [Project name]
-- Personal → [Project name]
-- [Hobby] → [Project name]
+**Task routing** (if your task manager supports IDs/UUIDs):
+- Work tasks → Work area or specific project ID
+- Personal tasks → appropriate project (Health, Shopping, etc.)
+- [Hobby] tasks → dedicated project
 
 ## Calendar
 
 Use `scripts/calendar.sh` to check my calendar.
 
+## Email
+
+Use `scripts/gmail.sh` (or similar) to read and manage email:
+
+gmail.sh inbox [--unread]     # List inbox
+gmail.sh read <id>            # Read email
+gmail.sh search <query>       # Search emails
+gmail.sh archive <id>         # Archive email
+
+**Email → Task workflow**: Route to correct project, set deadline if mentioned, include email link in task description, archive after task created.
+
 ## Notes
 
 `~/Documents/Notes/` contains:
 
-- `pulse.md` - Daily life digest auto-generated via the `life-pulse.md` command
+- `pulse.md` - Daily life digest auto-generated via the `/pulse` command
+- `life-goals.md` - Long-term objectives (separate from pulse)
+- `Me/` - Personal context, measurements, home info
 - `Research/` - Research files and comparisons
 - `Health/` - Health tracking, workouts
 - `[Hobby]/` - Notes for specific interests
@@ -109,7 +130,7 @@ When I ask to research something:
 
 Important documents in `~/Documents/Personal/` - identity docs, medical records, receipts, etc.
 
-## Health (Optional)
+## Health
 
 Use `scripts/health.sh` for Apple Health data (requires Health Auto Export app).
 
@@ -118,6 +139,14 @@ When I ask for a workout:
 1. Check my training plan in `Health/training.md`
 2. Look at recent workout logs
 3. Suggest appropriate workout and create the log file
+
+## Media
+
+Scripts for working with video/media:
+
+- `video-download.sh <url>` - Download videos (YouTube, etc.)
+- `video-transcript.sh <url>` - Get YouTube transcripts
+- `video-to-gif.sh <video>` - Convert to GIF
 
 ## Telegram Bot
 
@@ -128,9 +157,12 @@ Claude Code can run in this folder via a Telegram bot (code located at `~/dev/cl
 **MCP servers**: Edit `~/dev/claude-telegram-bot/mcp-config.ts` to add new servers.
 
 **Restart:** Use `/restart` in Telegram, or `cbot-restart` alias.
+
 ```
 
-I occasionally ask Claude to check my Notes folder, Things projects, etc., and update the `CLAUDE.md` file with the latest information, so it's fine to hardcode some information there since it's quite easy to let it update itself.
+The _"keeping context fresh"_ instruction creates a sort of file-based memory system, since Claude automatically reads and updates context files (notes) as it learns new things about me.
+
+I also occasionally ask Claude to check my Notes folder, Things projects, etc., and update the `CLAUDE.md` file with the latest information, so it's fine to hardcode some information there since it's quite easy to let it update itself.
 
 ## Example: Claude as a Personal Trainer / Health Coach
 
