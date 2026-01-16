@@ -12,6 +12,7 @@ export {
   handleRetry,
   handleProject,
   handlePermissionsCommand,
+  handleModel,
   handlePlan,
   handleCode,
 } from "./commands";

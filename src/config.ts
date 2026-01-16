@@ -16,6 +16,20 @@ const HOME = homedir();
 export const CONFIG_DIR = `${HOME}/.sickfar`;
 export const PERSISTENT_CONFIG_FILE = `${CONFIG_DIR}/settings.json`;
 
+// Model configuration
+const MODEL_IDS = {
+  opus: "claude-opus-4-5",
+  sonnet: "claude-sonnet-4-5",
+  haiku: "claude-haiku-4-5",
+} as const;
+
+export type ModelName = keyof typeof MODEL_IDS;
+
+const MODEL_DEFAULT = (process.env.MODEL_DEFAULT as ModelName) || "sonnet";
+const ALLOW_TELEGRAM_MODEL_MODE = process.env.ALLOW_TELEGRAM_MODEL_MODE !== "false";
+
+let currentModel: ModelName = MODEL_DEFAULT;
+
 // Ensure necessary paths are available for Claude's bash commands
 // LaunchAgents don't inherit the full shell environment
 const EXTRA_PATHS = [
@@ -82,6 +96,7 @@ function savePersistentConfig(): void {
 
     const config = {
       working_dir: currentWorkingDir,
+      model: currentModel,
       saved_at: new Date().toISOString(),
     };
     Bun.write(PERSISTENT_CONFIG_FILE, JSON.stringify(config, null, 2));
@@ -118,6 +133,17 @@ function loadPersistentConfig(): void {
           if (stat.isDirectory()) {
             currentWorkingDir = savedPath;
             console.log(`✓ Restored working directory: ${savedPath}`);
+
+            // Restore model if present
+            if (config.model && typeof config.model === "string") {
+              if (config.model in MODEL_IDS) {
+                currentModel = config.model as ModelName;
+                console.log(`✓ Restored model: ${currentModel}`);
+              } else {
+                console.log(`✗ Invalid model in config: ${config.model}, using default`);
+              }
+            }
+
             return;
           }
         } catch (err) {
@@ -406,6 +432,31 @@ export function resetPermissionMode(): void {
   currentPermissionMode = PERMISSION_MODE_DEFAULT;
 }
 
+// ============== Model Management ==============
+
+export function getModel(): string {
+  return MODEL_IDS[currentModel];
+}
+
+export function getModelName(): ModelName {
+  return currentModel;
+}
+
+export function setModel(model: ModelName): boolean {
+  if (!ALLOW_TELEGRAM_MODEL_MODE) {
+    return false;
+  }
+  currentModel = model;
+  savePersistentConfig();
+  return true;
+}
+
+export function isValidModelName(name: string): name is ModelName {
+  return name in MODEL_IDS;
+}
+
+export { MODEL_IDS };
+
 console.log(
-  `Config loaded: ${ALLOWED_USERS.length} allowed users, projects root: ${PROJECTS_ROOT}, current dir: ${currentWorkingDir}, permission mode: ${currentPermissionMode}`
+  `Config loaded: ${ALLOWED_USERS.length} allowed users, projects root: ${PROJECTS_ROOT}, current dir: ${currentWorkingDir}, permission mode: ${currentPermissionMode}, model: ${currentModel}`
 );

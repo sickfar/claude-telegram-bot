@@ -23,6 +23,7 @@ import {
   THINKING_KEYWORDS,
   getWorkingDir,
   getPermissionMode,
+  getModel,
   PLAN_MODE,
   getPlanStateFile,
   isExitPlanModeTool,
@@ -254,7 +255,7 @@ class ClaudeSession {
 
     // Build SDK V1 options - supports all features
     const options: Options = {
-      model: "claude-haiku-4-5",
+      model: getModel(),
       cwd: getWorkingDir(),
       settingSources: ["user", "project"],
       permissionMode: shouldBypassPermissions ? "bypassPermissions" : "default",

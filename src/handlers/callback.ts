@@ -7,7 +7,12 @@
 import type { Context } from "grammy";
 import { unlinkSync } from "fs";
 import { session } from "../session";
-import { ALLOWED_USERS } from "../config";
+import {
+  ALLOWED_USERS,
+  setModel,
+  isValidModelName,
+  MODEL_IDS,
+} from "../config";
 import { isAuthorized } from "../security";
 import { auditLog, startTypingIndicator } from "../utils";
 import { StreamingState, createStatusCallback } from "./streaming";
@@ -44,6 +49,12 @@ export async function handleCallback(ctx: Context): Promise<void> {
     if (callbackData.startsWith("planapproval:")) {
       const { handlePlanApprovalCallback } = await import("./plan-approval");
       await handlePlanApprovalCallback(ctx, callbackData, chatId);
+      return;
+    }
+
+    // Check for model callback
+    if (callbackData.startsWith("model:")) {
+      await handleModelCallback(ctx, callbackData, chatId);
       return;
     }
 
@@ -244,4 +255,54 @@ async function handlePermissionCallback(
 
     await ctx.answerCallbackQuery({ text: "💬 Waiting for comment" });
   }
+}
+
+/**
+ * Handle model selection callback.
+ */
+async function handleModelCallback(
+  ctx: Context,
+  callbackData: string,
+  chatId: number
+): Promise<void> {
+  const parts = callbackData.split(":");
+  if (parts.length !== 2) {
+    await ctx.answerCallbackQuery({ text: "Invalid callback data" });
+    return;
+  }
+
+  const requestedModel = parts[1]!;
+
+  // Validate model name
+  if (!isValidModelName(requestedModel)) {
+    await ctx.answerCallbackQuery({ text: "Invalid model" });
+    return;
+  }
+
+  // Set the model
+  const success = setModel(requestedModel);
+
+  if (!success) {
+    await ctx.editMessageText(
+      `Model switching is disabled. Set ALLOW_TELEGRAM_MODEL_MODE=true to enable.`,
+      { parse_mode: "HTML" }
+    );
+    await ctx.answerCallbackQuery({ text: "Model switching disabled" });
+    return;
+  }
+
+  // Update message to show selection
+  const modelId = MODEL_IDS[requestedModel];
+  await ctx.editMessageText(
+    `✓ Model switched to <b>${requestedModel}</b> (${modelId})`,
+    { parse_mode: "HTML" }
+  );
+
+  // Log the change
+  const username = ctx.from?.username || "unknown";
+  auditLog(chatId, username, "model_switch", requestedModel);
+
+  await ctx.answerCallbackQuery({
+    text: `Switched to ${requestedModel}`,
+  });
 }

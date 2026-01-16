@@ -18,6 +18,7 @@ import {
   handleRetry,
   handleProject,
   handlePermissionsCommand,
+  handleModel,
   handlePlan,
   handleCode,
   handleText,
@@ -62,6 +63,7 @@ bot.command("restart", handleRestart);
 bot.command("retry", handleRetry);
 bot.command("project", handleProject);
 bot.command("permissions", handlePermissionsCommand);
+bot.command("model", handleModel);
 bot.command("plan", handlePlan);
 bot.command("code", handleCode);
 

@@ -5,6 +5,7 @@
  */
 
 import type { Context } from "grammy";
+import { InlineKeyboard } from "grammy";
 import { homedir } from "os";
 import { relative } from "path";
 import { session } from "../session";
@@ -18,6 +19,12 @@ import {
   setPermissionMode,
   ALLOW_TELEGRAM_PERMISSIONS_MODE,
   PlanStateManager,
+  getModel,
+  getModelName,
+  setModel,
+  isValidModelName,
+  MODEL_IDS,
+  type ModelName,
 } from "../config";
 import { isAuthorized, validateProjectPath } from "../security";
 import { auditLog } from "../utils";
@@ -56,6 +63,7 @@ export async function handleStart(ctx: Context): Promise<void> {
       `/resume - Resume last session\n` +
       `/retry - Retry last message\n` +
       `/permissions - View/change permission mode\n` +
+      `/model - Switch Claude model\n` +
       `/restart - Restart the bot\n\n` +
       `<b>Tips:</b>\n` +
       `• Prefix with <code>!</code> to interrupt current query\n` +
@@ -194,6 +202,9 @@ export async function handleStatus(ctx: Context): Promise<void> {
   const permMode = getPermissionMode();
   const permIcon = permMode === "bypass" ? "🔓" : "🔐";
   lines.push(`${permIcon} Permission mode: ${permMode}`);
+
+  // Model
+  lines.push(`📱 Model: <b>${getModelName()}</b>`);
 
   await ctx.reply(lines.join("\n"), { parse_mode: "HTML" });
 }
@@ -442,6 +453,79 @@ export async function handlePermissionsCommand(
   } else {
     await ctx.reply("❌ Failed to change permission mode.");
   }
+}
+
+/**
+ * /model - Switch between Claude models (opus/sonnet/haiku).
+ */
+export async function handleModel(ctx: Context): Promise<void> {
+  const chatId = ctx.chat?.id;
+  if (!chatId) return;
+
+  const userId = ctx.from?.id;
+  const username = ctx.from?.username || "unknown";
+
+  if (!isAuthorized(userId, ALLOWED_USERS)) {
+    await ctx.reply("Unauthorized.");
+    return;
+  }
+
+  const args = ctx.message?.text?.split(" ").slice(1) || [];
+  const requestedModel = args[0]?.toLowerCase();
+
+  // No arguments: show inline keyboard with model options
+  if (!requestedModel) {
+    const currentModel = getModelName();
+
+    // Create inline keyboard with model buttons
+    const keyboard = new InlineKeyboard()
+      .text("🚀 Opus", "model:opus")
+      .row()
+      .text("⚡ Sonnet", "model:sonnet")
+      .row()
+      .text("💨 Haiku", "model:haiku");
+
+    await ctx.reply(
+      `Current model: <b>${currentModel}</b>\n\nSelect a model:`,
+      {
+        parse_mode: "HTML",
+        reply_markup: keyboard
+      }
+    );
+    return;
+  }
+
+  // Programmatic model switch (e.g., /model opus)
+  if (!isValidModelName(requestedModel)) {
+    await ctx.reply(
+      `Invalid model: <b>${requestedModel}</b>\n\n` +
+      `Available models: ${Object.keys(MODEL_IDS).join(", ")}`,
+      { parse_mode: "HTML" }
+    );
+    return;
+  }
+
+  const success = setModel(requestedModel);
+
+  if (!success) {
+    await ctx.reply(
+      "Model switching is disabled. Set ALLOW_TELEGRAM_MODEL_MODE=true to enable.",
+      { parse_mode: "HTML" }
+    );
+    return;
+  }
+
+  auditLog(
+    chatId,
+    username,
+    `model_switch`,
+    requestedModel
+  );
+
+  await ctx.reply(
+    `Model switched to <b>${requestedModel}</b> (${MODEL_IDS[requestedModel]})`,
+    { parse_mode: "HTML" }
+  );
 }
 
 /**
