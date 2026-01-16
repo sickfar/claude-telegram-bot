@@ -5,16 +5,20 @@
  */
 
 import type { Context } from "grammy";
+import { homedir } from "os";
+import { relative } from "path";
 import { session } from "../session";
 import {
-  WORKING_DIR,
+  getWorkingDir,
+  setWorkingDir,
+  PROJECTS_ROOT,
   ALLOWED_USERS,
   RESTART_FILE,
   getPermissionMode,
   setPermissionMode,
   ALLOW_TELEGRAM_PERMISSIONS_MODE,
 } from "../config";
-import { isAuthorized } from "../security";
+import { isAuthorized, validateProjectPath } from "../security";
 import { auditLog } from "../utils";
 
 /**
@@ -30,19 +34,22 @@ export async function handleStart(ctx: Context): Promise<void> {
   }
 
   const status = session.isActive ? "Active session" : "No active session";
-  const workDir = WORKING_DIR;
+  const currentDir = getWorkingDir();
+  const relativeToRoot = relative(PROJECTS_ROOT, currentDir);
+  const displayPath = relativeToRoot || ".";
 
   const permMode = getPermissionMode();
 
   await ctx.reply(
     `🤖 <b>Claude Telegram Bot</b>\n\n` +
       `Status: ${status}\n` +
-      `Working directory: <code>${workDir}</code>\n` +
+      `Current project: <code>${displayPath}</code>\n` +
       `Permission mode: ${permMode}\n\n` +
       `<b>Commands:</b>\n` +
       `/new - Start fresh session\n` +
       `/stop - Stop current query\n` +
       `/status - Show detailed status\n` +
+      `/project - Switch project directory\n` +
       `/resume - Resume last session\n` +
       `/retry - Retry last message\n` +
       `/permissions - View/change permission mode\n` +
@@ -171,8 +178,14 @@ export async function handleStatus(ctx: Context): Promise<void> {
     lines.push(`\n⚠️ Last error (${ago}s ago):`, `   ${session.lastError}`);
   }
 
-  // Working directory
-  lines.push(`\n📁 Working dir: <code>${WORKING_DIR}</code>`);
+  // Project directory
+  const currentDir = getWorkingDir();
+  const relativeToRoot = relative(PROJECTS_ROOT, currentDir);
+  const displayPath = relativeToRoot || ".";
+  lines.push(
+    `\n📁 Current project: <code>${displayPath}</code>`,
+    `   Full path: <code>${currentDir}</code>`
+  );
 
   // Permission mode
   const permMode = getPermissionMode();
@@ -283,6 +296,84 @@ export async function handleRetry(ctx: Context): Promise<void> {
   } as Context;
 
   await handleText(fakeCtx);
+}
+
+/**
+ * /project - Switch Claude's working directory to a different project.
+ */
+export async function handleProject(ctx: Context): Promise<void> {
+  const userId = ctx.from?.id;
+  const username = ctx.from?.username || "unknown";
+
+  if (!isAuthorized(userId, ALLOWED_USERS)) {
+    await ctx.reply("Unauthorized.");
+    return;
+  }
+
+  // Parse relative path from command args
+  const args = ctx.message?.text?.split(" ") || [];
+  const relativePath = args.slice(1).join(" ").trim();
+
+  // If no args, show current project
+  if (!relativePath) {
+    const currentDir = getWorkingDir();
+    const relativeToRoot = relative(PROJECTS_ROOT, currentDir);
+    const displayPath = relativeToRoot || ".";
+
+    await ctx.reply(
+      `📁 <b>Current project:</b>\n\n` +
+        `Relative: <code>${displayPath}</code>\n` +
+        `Absolute: <code>${currentDir}</code>\n\n` +
+        `<b>Usage:</b> <code>/project &lt;relative/path&gt;</code>`,
+      { parse_mode: "HTML" }
+    );
+    return;
+  }
+
+  // Check if query is running
+  if (session.isRunning) {
+    await ctx.reply(
+      "⏳ Cannot switch projects while a query is running. Use /stop first."
+    );
+    return;
+  }
+
+  // Validate path
+  const [valid, absolutePath, error] = validateProjectPath(
+    relativePath,
+    PROJECTS_ROOT
+  );
+
+  if (!valid || !absolutePath) {
+    await ctx.reply(`❌ Invalid path: ${error}`);
+    return;
+  }
+
+  // Kill existing session
+  const oldDir = getWorkingDir();
+  await session.kill();
+
+  // Update working dir
+  setWorkingDir(absolutePath);
+
+  // Audit log
+  const oldRelative = relative(PROJECTS_ROOT, oldDir);
+  const newRelative = relative(PROJECTS_ROOT, absolutePath);
+  auditLog(
+    userId!,
+    username,
+    "PROJECT",
+    `Switched project: ${oldRelative || "."} → ${newRelative || "."}`,
+    ""
+  );
+
+  // Reply with confirmation
+  const displayPath = newRelative || ".";
+  await ctx.reply(
+    `✅ <b>Switched to project:</b> <code>${displayPath}</code>\n\n` +
+      `Session cleared. Next message starts fresh in new directory.`,
+    { parse_mode: "HTML" }
+  );
 }
 
 /**

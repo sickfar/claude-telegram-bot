@@ -10,6 +10,7 @@ export {
   handleResume,
   handleRestart,
   handleRetry,
+  handleProject,
   handlePermissionsCommand,
   handlePlan,
   handleCode,

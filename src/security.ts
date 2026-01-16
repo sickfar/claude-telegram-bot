@@ -5,10 +5,10 @@
  */
 
 import { resolve, normalize } from "path";
-import { realpathSync } from "fs";
+import { realpathSync, existsSync } from "fs";
 import type { RateLimitBucket } from "./types";
 import {
-  ALLOWED_PATHS,
+  getAllowedPaths,
   BLOCKED_PATTERNS,
   RATE_LIMIT_ENABLED,
   RATE_LIMIT_REQUESTS,
@@ -99,7 +99,7 @@ export function isPathAllowed(path: string): boolean {
     }
 
     // Check against allowed paths using proper containment
-    for (const allowed of ALLOWED_PATHS) {
+    for (const allowed of getAllowedPaths()) {
       const allowedResolved = resolve(allowed);
       if (
         resolved === allowedResolved ||
@@ -112,6 +112,60 @@ export function isPathAllowed(path: string): boolean {
     return false;
   } catch {
     return false;
+  }
+}
+
+/**
+ * Validate a relative project path and ensure it's within PROJECTS_ROOT.
+ * Returns [valid, absolutePath, error].
+ */
+export function validateProjectPath(
+  relativePath: string,
+  projectsRoot: string
+): [valid: boolean, absolutePath: string | null, error: string] {
+  try {
+    // 1. Reject absolute paths
+    if (relativePath.startsWith("/") || /^[A-Za-z]:/.test(relativePath)) {
+      return [
+        false,
+        null,
+        "Absolute paths not allowed. Use relative paths within projects root.",
+      ];
+    }
+
+    // 2. Join with PROJECTS_ROOT
+    const joined = resolve(projectsRoot, relativePath);
+
+    // 3. Resolve symlinks (if path exists)
+    let resolved: string;
+    try {
+      resolved = realpathSync(joined);
+    } catch {
+      // Path doesn't exist yet, use normalized path
+      resolved = normalize(joined);
+    }
+
+    // 4. Verify resolved path is within PROJECTS_ROOT
+    const projectsRootResolved = realpathSync(projectsRoot);
+    if (
+      resolved !== projectsRootResolved &&
+      !resolved.startsWith(projectsRootResolved + "/")
+    ) {
+      return [
+        false,
+        null,
+        `Path escapes projects root. Resolved to: ${resolved}`,
+      ];
+    }
+
+    // 5. Check directory exists
+    if (!existsSync(resolved)) {
+      return [false, null, `Directory does not exist: ${resolved}`];
+    }
+
+    return [true, resolved, ""];
+  } catch (error) {
+    return [false, null, `Validation error: ${error}`];
   }
 }
 

@@ -14,15 +14,15 @@ import { readFileSync } from "fs";
 import { homedir } from "os";
 import type { Context } from "grammy";
 import {
-  ALLOWED_PATHS,
+  getAllowedPaths,
   MCP_SERVERS,
-  SAFETY_PROMPT,
+  getSafetyPrompt,
   SESSION_FILE,
   STREAMING_THROTTLE_MS,
   TEMP_PATHS,
   THINKING_DEEP_KEYWORDS,
   THINKING_KEYWORDS,
-  WORKING_DIR,
+  getWorkingDir,
   getPermissionMode,
 } from "./config";
 import { formatToolStatus } from "./formatting";
@@ -251,14 +251,15 @@ class ClaudeSession {
 
     // Build system prompt with plan mode if active
     const planModePrompt = await getPlanModePrompt(this.sessionId);
+    const safetyPrompt = getSafetyPrompt();
     const systemPrompt = planModePrompt
-      ? `${SAFETY_PROMPT}\n\n${planModePrompt}`
-      : SAFETY_PROMPT;
+      ? `${safetyPrompt}\n\n${planModePrompt}`
+      : safetyPrompt;
 
     // Build SDK V1 options - supports all features
     const options: Options = {
       model: "claude-sonnet-4-5",
-      cwd: WORKING_DIR,
+      cwd: getWorkingDir(),
       settingSources: ["user", "project"],
       permissionMode:
         getPermissionMode() === "interactive" ? "default" : "bypassPermissions",
@@ -266,7 +267,7 @@ class ClaudeSession {
       systemPrompt: systemPrompt,
       mcpServers: MCP_SERVERS,
       maxThinkingTokens: thinkingTokens,
-      additionalDirectories: ALLOWED_PATHS,
+      additionalDirectories: getAllowedPaths(),
       resume: this.sessionId || undefined,
 
       // Permission callback for interactive mode
@@ -608,7 +609,7 @@ class ClaudeSession {
       const data: SessionData = {
         session_id: this.sessionId,
         saved_at: new Date().toISOString(),
-        working_dir: WORKING_DIR,
+        working_dir: getWorkingDir(),
       };
 
       // Check for active plan mode state
@@ -651,7 +652,7 @@ class ClaudeSession {
         return [false, "Saved session file is empty"];
       }
 
-      if (data.working_dir && data.working_dir !== WORKING_DIR) {
+      if (data.working_dir && data.working_dir !== getWorkingDir()) {
         return [
           false,
           `Session was for different directory: ${data.working_dir}`,

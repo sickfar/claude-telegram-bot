@@ -42,7 +42,29 @@ export const ALLOWED_USERS: number[] = (
   .map((x) => parseInt(x.trim(), 10))
   .filter((x) => !isNaN(x));
 
-export const WORKING_DIR = process.env.CLAUDE_WORKING_DIR || HOME;
+// Projects root directory (parent of all project directories)
+export const PROJECTS_ROOT = process.env.PROJECTS_ROOT || HOME;
+
+// Runtime state: current working directory
+let currentWorkingDir: string = PROJECTS_ROOT;
+
+// Get the current working directory
+export function getWorkingDir(): string {
+  return currentWorkingDir;
+}
+
+// Set the working directory (must be within PROJECTS_ROOT)
+export function setWorkingDir(path: string): void {
+  currentWorkingDir = path;
+  rebuildAllowedPaths();
+}
+
+// Reset working directory to PROJECTS_ROOT
+export function resetWorkingDir(): void {
+  currentWorkingDir = PROJECTS_ROOT;
+  rebuildAllowedPaths();
+}
+
 export const OPENAI_API_KEY = process.env.OPENAI_API_KEY || "";
 
 // ============== Claude CLI Path ==============
@@ -85,24 +107,40 @@ export { MCP_SERVERS };
 
 // ============== Security Configuration ==============
 
-// Allowed directories for file operations
-const defaultAllowedPaths = [
-  WORKING_DIR,
-  `${HOME}/Documents`,
-  `${HOME}/Downloads`,
-  `${HOME}/Desktop`,
-  `${HOME}/.claude`, // Claude Code data (plans, settings)
-];
+// Allowed directories for file operations (runtime variable)
+let _allowedPaths: string[] = [];
 
-const allowedPathsStr = process.env.ALLOWED_PATHS || "";
-export const ALLOWED_PATHS: string[] = allowedPathsStr
-  ? allowedPathsStr
-      .split(",")
-      .map((p) => p.trim())
-      .filter(Boolean)
-  : defaultAllowedPaths;
+// Build default allowed paths based on current working directory
+function buildDefaultAllowedPaths(): string[] {
+  return [
+    currentWorkingDir,
+    `${HOME}/Documents`,
+    `${HOME}/Downloads`,
+    `${HOME}/Desktop`,
+    `${HOME}/.claude`, // Claude Code data (plans, settings)
+  ];
+}
 
-// Build safety prompt dynamically from ALLOWED_PATHS
+// Rebuild allowed paths when working directory changes
+function rebuildAllowedPaths(): void {
+  const allowedPathsStr = process.env.ALLOWED_PATHS || "";
+  _allowedPaths = allowedPathsStr
+    ? allowedPathsStr
+        .split(",")
+        .map((p) => p.trim())
+        .filter(Boolean)
+    : buildDefaultAllowedPaths();
+}
+
+// Get the current allowed paths
+export function getAllowedPaths(): string[] {
+  return _allowedPaths;
+}
+
+// Initialize allowed paths
+rebuildAllowedPaths();
+
+// Build safety prompt dynamically from current allowed paths
 function buildSafetyPrompt(allowedPaths: string[]): string {
   const pathsList = allowedPaths
     .map((p) => `   - ${p} (and subdirectories)`)
@@ -131,7 +169,10 @@ You are running via Telegram, so the user cannot easily undo mistakes. Be extra 
 `;
 }
 
-export const SAFETY_PROMPT = buildSafetyPrompt(ALLOWED_PATHS);
+// Get the current safety prompt (dynamically built from allowed paths)
+export function getSafetyPrompt(): string {
+  return buildSafetyPrompt(_allowedPaths);
+}
 
 // Dangerous command patterns to block
 export const BLOCKED_PATTERNS = [
@@ -261,5 +302,5 @@ export function resetPermissionMode(): void {
 }
 
 console.log(
-  `Config loaded: ${ALLOWED_USERS.length} allowed users, working dir: ${WORKING_DIR}, permission mode: ${currentPermissionMode}`
+  `Config loaded: ${ALLOWED_USERS.length} allowed users, projects root: ${PROJECTS_ROOT}, current dir: ${currentWorkingDir}, permission mode: ${currentPermissionMode}`
 );

@@ -34,7 +34,7 @@ Telegram message → Handler → Auth check → Rate limit → Claude session �
 ### Handlers (`src/handlers/`)
 
 Each message type has a dedicated async handler:
-- **`commands.ts`** - `/start`, `/new`, `/stop`, `/status`, `/resume`, `/restart`
+- **`commands.ts`** - `/start`, `/new`, `/stop`, `/status`, `/project`, `/resume`, `/restart`
 - **`text.ts`** - Text messages with intent filtering
 - **`voice.ts`** - Voice→text via OpenAI, then same flow as text
 - **`photo.ts`** - Image analysis with media group buffering (1s timeout for albums)
@@ -55,11 +55,19 @@ Each message type has a dedicated async handler:
 
 All config via `.env` (copy from `.env.example`). Key variables:
 - `TELEGRAM_BOT_TOKEN`, `TELEGRAM_ALLOWED_USERS` (required)
-- `CLAUDE_WORKING_DIR` - Working directory for Claude
+- `PROJECTS_ROOT` - Parent directory for all projects (default: home directory)
 - `ALLOWED_PATHS` - Directories Claude can access
 - `OPENAI_API_KEY` - For voice transcription
 
 MCP servers defined in `mcp-config.ts`.
+
+### Project Switching
+
+Use `/project <relative/path>` to switch Claude's working directory dynamically:
+- Paths are relative to `PROJECTS_ROOT`
+- Switching kills the current session and starts fresh
+- Security checks prevent path traversal attacks
+- Example: `/project myapp` switches to `$PROJECTS_ROOT/myapp`
 
 ### Runtime Files
 

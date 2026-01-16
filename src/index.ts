@@ -6,7 +6,7 @@
 
 import { Bot } from "grammy";
 import { run, sequentialize } from "@grammyjs/runner";
-import { TELEGRAM_TOKEN, WORKING_DIR, ALLOWED_USERS, RESTART_FILE } from "./config";
+import { TELEGRAM_TOKEN, getWorkingDir, ALLOWED_USERS, RESTART_FILE } from "./config";
 import { unlinkSync, readFileSync, existsSync } from "fs";
 import {
   handleStart,
@@ -16,6 +16,7 @@ import {
   handleResume,
   handleRestart,
   handleRetry,
+  handleProject,
   handlePermissionsCommand,
   handlePlan,
   handleCode,
@@ -59,6 +60,7 @@ bot.command("status", handleStatus);
 bot.command("resume", handleResume);
 bot.command("restart", handleRestart);
 bot.command("retry", handleRetry);
+bot.command("project", handleProject);
 bot.command("permissions", handlePermissionsCommand);
 bot.command("plan", handlePlan);
 bot.command("code", handleCode);
@@ -92,7 +94,7 @@ bot.catch((err) => {
 console.log("=".repeat(50));
 console.log("Claude Telegram Bot - TypeScript Edition");
 console.log("=".repeat(50));
-console.log(`Working directory: ${WORKING_DIR}`);
+console.log(`Current directory: ${getWorkingDir()}`);
 console.log(`Allowed users: ${ALLOWED_USERS.length}`);
 console.log("Starting bot...");
 
