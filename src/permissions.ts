@@ -166,17 +166,16 @@ export async function pollPermissionRequest(
 }
 
 /**
- * Clean up permission request file.
+ * Clean up permission request file (synchronous).
  */
 export function cleanupPermissionRequest(requestId: string): void {
   const filepath = `/tmp/perm-${requestId}.json`;
   try {
-    Bun.file(filepath).exists().then((exists: boolean) => {
-      if (exists) {
-        require("fs").unlinkSync(filepath);
-        console.log(`Cleaned up permission request: ${requestId}`);
-      }
-    });
+    const fs = require("fs");
+    if (fs.existsSync(filepath)) {
+      fs.unlinkSync(filepath);
+      console.log(`Cleaned up permission request: ${requestId}`);
+    }
   } catch (error) {
     console.debug(`Failed to cleanup permission request ${requestId}:`, error);
   }

@@ -11,7 +11,6 @@ import {
   type SDKMessage,
 } from "@anthropic-ai/claude-agent-sdk";
 import { readFileSync } from "fs";
-import { homedir } from "os";
 import type { Context } from "grammy";
 import {
   getAllowedPaths,
@@ -24,7 +23,13 @@ import {
   THINKING_KEYWORDS,
   getWorkingDir,
   getPermissionMode,
+  PLAN_MODE,
+  getPlanStateFile,
+  isExitPlanModeTool,
+  isWriteTool,
+  PlanStateManager,
 } from "./config";
+import type { PlanApprovalAction } from "./plan-mode";
 import { formatToolStatus } from "./formatting";
 import {
   checkPendingAskUserRequests,
@@ -75,33 +80,14 @@ function getTextFromMessage(msg: SDKMessage): string | null {
 }
 
 /**
- * Get plan mode system prompt if plan mode is active.
+ * Check if plan mode is enabled using PlanStateManager.
+ * Returns the plan mode system prompt if active, undefined otherwise.
  */
 async function getPlanModePrompt(
-  sessionId: string | null
+  manager: PlanStateManager
 ): Promise<string | undefined> {
-  if (!sessionId) return undefined;
-
-  const stateFile = `/tmp/plan-state-${sessionId}.json`;
-  const file = Bun.file(stateFile);
-  if (!(await file.exists())) return undefined;
-
-  const state = JSON.parse(await file.text());
-  if (!state.plan_mode_enabled) return undefined;
-
-  return `
-CRITICAL: PLAN MODE ACTIVE
-
-You are in READ-ONLY planning mode. You MUST ONLY use these tools:
-- Read, Glob, Grep: For exploring the codebase
-- Bash: For read-only commands only (no modifications)
-- WritePlan, UpdatePlan, ExitPlanMode: For creating/updating your plan
-
-You CANNOT use Write, Edit, or any tools that modify system state.
-
-Your task: Explore the codebase and create a detailed implementation plan.
-When done, call ExitPlanMode to present your plan for approval.
-`;
+  await manager.load();
+  return manager.getSystemPrompt() ?? undefined;
 }
 
 /**
@@ -117,6 +103,9 @@ class ClaudeSession {
   lastErrorTime: Date | null = null;
   lastUsage: TokenUsage | null = null;
   lastMessage: string | null = null;
+
+  // Plan mode state manager
+  planStateManager: PlanStateManager = new PlanStateManager();
 
   private abortController: AbortController | null = null;
   private isQueryRunning = false;
@@ -249,21 +238,27 @@ class ClaudeSession {
       messageToSend = datePrefix + messageToSend;
     }
 
+    // Initialize plan state manager with current session ID
+    this.planStateManager = new PlanStateManager(this.sessionId);
+
     // Build system prompt with plan mode if active
-    const planModePrompt = await getPlanModePrompt(this.sessionId);
+    const planModePrompt = await getPlanModePrompt(this.planStateManager);
     const safetyPrompt = getSafetyPrompt();
     const systemPrompt = planModePrompt
       ? `${safetyPrompt}\n\n${planModePrompt}`
       : safetyPrompt;
 
+    // In plan mode, always bypass permissions (plan approval is the permission gate)
+    const inPlanMode = this.planStateManager.isEnabled();
+    const shouldBypassPermissions = inPlanMode || getPermissionMode() !== "interactive";
+
     // Build SDK V1 options - supports all features
     const options: Options = {
-      model: "claude-sonnet-4-5",
+      model: "claude-haiku-4-5",
       cwd: getWorkingDir(),
       settingSources: ["user", "project"],
-      permissionMode:
-        getPermissionMode() === "interactive" ? "default" : "bypassPermissions",
-      allowDangerouslySkipPermissions: getPermissionMode() !== "interactive",
+      permissionMode: shouldBypassPermissions ? "bypassPermissions" : "default",
+      allowDangerouslySkipPermissions: shouldBypassPermissions,
       systemPrompt: systemPrompt,
       mcpServers: MCP_SERVERS,
       maxThinkingTokens: thinkingTokens,
@@ -275,8 +270,8 @@ class ClaudeSession {
         toolName: string,
         toolInput: Record<string, unknown>
       ) => {
-        // If bypass mode, allow everything
-        if (getPermissionMode() !== "interactive") {
+        // If bypass mode or in plan mode, allow everything
+        if (shouldBypassPermissions) {
           return { behavior: "allow", updatedInput: toolInput };
         }
 
@@ -366,6 +361,7 @@ class ClaudeSession {
     let lastTextUpdate = 0;
     let queryCompleted = false;
     let askUserTriggered = false;
+    let planApprovalRequested = false; // Track if ExitPlanMode was called (to block subsequent writes)
 
     try {
       // Use V1 query() API - supports all options including cwd, mcpServers, etc.
@@ -389,6 +385,10 @@ class ClaudeSession {
         if (!this.sessionId && event.session_id) {
           this.sessionId = event.session_id;
           console.log(`GOT session_id: ${this.sessionId!.slice(0, 8)}...`);
+
+          // Update plan state manager with session ID (migrates pending state if exists)
+          await this.planStateManager.updateSessionId(this.sessionId);
+
           this.saveSession();
         }
 
@@ -408,6 +408,22 @@ class ClaudeSession {
             if (block.type === "tool_use") {
               const toolName = block.name;
               const toolInput = block.input as Record<string, unknown>;
+
+              // Check for ExitPlanMode - set flag to prevent subsequent modifications
+              if (isExitPlanModeTool(toolName)) {
+                planApprovalRequested = true;
+                await this.planStateManager.transition({ type: "REQUEST_APPROVAL", requestId: "" });
+                console.log(`[PLAN] ExitPlanMode detected (${toolName}) - blocking subsequent write operations`);
+              }
+
+              // Block write operations if plan approval is pending
+              const [shouldBlock, blockReason] = this.planStateManager.shouldBlockTool(toolName);
+              if (shouldBlock || (isWriteTool(toolName) && planApprovalRequested)) {
+                const reason = blockReason || "plan approval pending";
+                console.warn(`BLOCKED: ${toolName} not allowed - ${reason}`);
+                await statusCallback("tool", `BLOCKED: ${toolName} not allowed - ${reason}`);
+                throw new Error(`${toolName} blocked: ${reason}`);
+              }
 
               // Safety check for Bash commands
               if (toolName === "Bash") {
@@ -483,16 +499,59 @@ class ClaudeSession {
                 }
               }
 
-              // Check for pending plan approvals after ExitPlanMode
-              if (toolName.startsWith("mcp__plan-mode__ExitPlanMode") && ctx && chatId) {
-                // Small delay to let MCP server write the file
-                await new Promise((resolve) => setTimeout(resolve, 200));
+              // Check for plan approval after ExitPlanMode tool
+              if (isExitPlanModeTool(toolName) && ctx && chatId && this.sessionId) {
+                console.log("[PLAN] ExitPlanMode tool completed, checking for plan approval");
 
-                // Import and check for pending plan approvals
-                const { checkPendingPlanApprovals } = await import(
-                  "./handlers/plan-approval"
-                );
-                await checkPendingPlanApprovals(ctx, chatId);
+                // Retry a few times in case of timing issues (like ask_user does)
+                for (let attempt = 0; attempt < 5; attempt++) {
+                  if (attempt > 0) {
+                    console.log(`[PLAN] Retry attempt ${attempt}`);
+                  }
+
+                  // Delay to let MCP server write state
+                  await new Promise((resolve) => setTimeout(resolve, attempt === 0 ? 200 : 300));
+
+                  try {
+                    // Reload state from file to get MCP server updates
+                    await this.planStateManager.load();
+                    const state = this.planStateManager.getState();
+                    console.log(`[PLAN] plan_approval_pending=${state.plan_approval_pending}, active_plan_file=${state.active_plan_file}`);
+
+                    if (state.plan_approval_pending && state.active_plan_file) {
+                      // Read plan content using manager
+                      const planContent = await this.planStateManager.readPlanContent();
+
+                      if (planContent) {
+                        const requestId = crypto.randomUUID().slice(0, 8);
+                        console.log(`[PLAN] Displaying approval for ${state.active_plan_file}`);
+
+                        // Store in manager
+                        this.planStateManager.setPendingApproval(state.active_plan_file, planContent, requestId);
+
+                        // Display approval dialog
+                        const { displayPlanApproval } = await import("./handlers/plan-approval");
+                        await displayPlanApproval(ctx, state.active_plan_file, planContent, requestId);
+
+                        // Break out of event loop to wait for user
+                        askUserTriggered = true;
+                        console.log("[PLAN] Approval dialog displayed, breaking event loop");
+                        break; // Success, stop retrying
+                      } else {
+                        const planPath = this.planStateManager.getPlanFilePath();
+                        console.warn(`[PLAN] Plan file not found: ${planPath}`);
+                      }
+                    } else {
+                      console.log(`[PLAN] Approval not pending yet (attempt ${attempt})`);
+                    }
+                  } catch (error) {
+                    console.error(`[PLAN] Error checking plan approval:`, error);
+                  }
+                }
+
+                if (!askUserTriggered) {
+                  console.error("[PLAN] Failed to display approval dialog after all retries");
+                }
               }
 
               // Check for pending permission requests (interactive mode)
@@ -503,8 +562,10 @@ class ClaudeSession {
 
             // Text content
             if (block.type === "text") {
-              responseParts.push(block.text);
-              currentSegmentText += block.text;
+              const text = block.text;
+
+              responseParts.push(text);
+              currentSegmentText += text;
 
               // Stream text updates (throttled)
               const now = Date.now();
@@ -522,8 +583,9 @@ class ClaudeSession {
             }
           }
 
-          // Break out of event loop if ask_user was triggered
+          // Break out of event loop if ask_user or plan approval was triggered
           if (askUserTriggered) {
+            console.log("[PLAN] Breaking out of event loop - askUserTriggered=true");
             break;
           }
         }
@@ -574,8 +636,9 @@ class ClaudeSession {
     this.lastError = null;
     this.lastErrorTime = null;
 
-    // If ask_user was triggered, return early - user will respond via button
+    // If ask_user or plan approval was triggered, return early - user will respond via button
     if (askUserTriggered) {
+      console.log("[PLAN] Query ended early - waiting for user selection");
       await statusCallback("done", "");
       return "[Waiting for user selection]";
     }
@@ -596,7 +659,70 @@ class ClaudeSession {
   async kill(): Promise<void> {
     this.sessionId = null;
     this.lastActivity = null;
+    // Reset plan state manager
+    this.planStateManager = new PlanStateManager();
     console.log("Session cleared");
+  }
+
+  /**
+   * Handle plan approval response.
+   * Delegates to PlanStateManager.
+   * Returns: [success, message, shouldContinue]
+   */
+  handlePlanApproval(
+    requestId: string,
+    action: PlanApprovalAction
+  ): [boolean, string, boolean] {
+    const approval = this.planStateManager.getPendingApproval();
+    if (!approval) {
+      return [false, "No pending plan approval", false];
+    }
+
+    if (approval.requestId !== requestId) {
+      return [false, "Request ID mismatch", false];
+    }
+
+    // Note: The actual state transition is done asynchronously in the callback handler
+    // Here we just return the response synchronously
+    if (action === "accept") {
+      const msg = `✅ <b>Plan Accepted</b>\n\nFile: <code>${approval.planFile}</code>`;
+      return [true, msg, true];
+    } else if (action === "reject") {
+      const msg = `❌ <b>Plan Rejected</b>\n\nFile: <code>${approval.planFile}</code>`;
+      return [true, msg, false];
+    } else if (action === "clear") {
+      const msg = `🗑️ <b>Context Cleared</b>\n\nFile: <code>${approval.planFile}</code>`;
+      return [true, msg, false];
+    }
+
+    return [false, "Invalid action", false];
+  }
+
+  /**
+   * Handle plan approval response asynchronously (with state transition).
+   */
+  async handlePlanApprovalAsync(
+    requestId: string,
+    action: PlanApprovalAction
+  ): Promise<[boolean, string, boolean]> {
+    return await this.planStateManager.handleApprovalResponse(requestId, action);
+  }
+
+  /**
+   * Get pending plan approval info (for displaying to user).
+   */
+  getPendingPlanApproval(): {
+    planFile: string;
+    planContent: string;
+    requestId: string;
+  } | null {
+    const approval = this.planStateManager.getPendingApproval();
+    if (!approval) return null;
+    return {
+      planFile: approval.planFile,
+      planContent: approval.planContent,
+      requestId: approval.requestId,
+    };
   }
 
   /**
@@ -612,20 +738,16 @@ class ClaudeSession {
         working_dir: getWorkingDir(),
       };
 
-      // Check for active plan mode state
-      const stateFile = `/tmp/plan-state-${this.sessionId}.json`;
-      const file = Bun.file(stateFile);
-      if (await file.exists()) {
-        const state = JSON.parse(await file.text());
-        if (state.plan_mode_enabled) {
-          data.plan_mode_enabled = true;
-        }
-        if (state.active_plan_file) {
-          data.active_plan_file = state.active_plan_file;
-        }
-        if (state.plan_approval_pending) {
-          data.plan_approval_pending = true;
-        }
+      // Get plan mode state from manager
+      const planState = this.planStateManager.getState();
+      if (planState.plan_mode_enabled) {
+        data.plan_mode_enabled = true;
+      }
+      if (planState.active_plan_file) {
+        data.active_plan_file = planState.active_plan_file;
+      }
+      if (planState.plan_approval_pending) {
+        data.plan_approval_pending = true;
       }
 
       await Bun.write(SESSION_FILE, JSON.stringify(data));
@@ -667,24 +789,27 @@ class ClaudeSession {
         })`
       );
 
-      // Check for active plan and inject into context
-      if (data.active_plan_file) {
-        const HOME = homedir();
-        const planPath = `${HOME}/.claude/plans/${data.active_plan_file}`;
-        const planFile = Bun.file(planPath);
+      // Initialize plan state manager with resumed session ID
+      this.planStateManager = new PlanStateManager(this.sessionId);
+      await this.planStateManager.load();
 
-        if (await planFile.exists()) {
-          console.log(`Found active plan: ${data.active_plan_file}`);
+      // Check for active plan and inject into context
+      const activePlanFile = this.planStateManager.getActivePlanFile();
+      if (activePlanFile) {
+        const planContent = await this.planStateManager.readPlanContent();
+
+        if (planContent) {
+          console.log(`Found active plan: ${activePlanFile}`);
 
           // Store plan for injection into next message
           this.pendingPlanInjection = {
-            filename: data.active_plan_file,
-            content: await planFile.text(),
+            filename: activePlanFile,
+            content: planContent,
           };
 
           return [
             true,
-            `Resumed session with active plan: ${data.active_plan_file}`,
+            `Resumed session with active plan: ${activePlanFile}`,
           ];
         }
       }

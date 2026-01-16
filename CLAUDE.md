@@ -34,7 +34,7 @@ Telegram message → Handler → Auth check → Rate limit → Claude session �
 ### Handlers (`src/handlers/`)
 
 Each message type has a dedicated async handler:
-- **`commands.ts`** - `/start`, `/new`, `/stop`, `/status`, `/project`, `/resume`, `/restart`
+- **`commands.ts`** - `/start`, `/new`, `/plan`, `/code`, `/stop`, `/status`, `/project`, `/resume`, `/restart`, `/retry`, `/permissions`
 - **`text.ts`** - Text messages with intent filtering
 - **`voice.ts`** - Voice→text via OpenAI, then same flow as text
 - **`photo.ts`** - Image analysis with media group buffering (1s timeout for albums)
@@ -68,6 +68,17 @@ Use `/project <relative/path>` to switch Claude's working directory dynamically:
 - Switching kills the current session and starts fresh
 - Security checks prevent path traversal attacks
 - Example: `/project myapp` switches to `$PROJECTS_ROOT/myapp`
+
+### Plan Mode
+
+Use `/plan <message>` to send a message to Claude in plan mode:
+- If no active session exists, starts a fresh session in read-only planning mode
+- If a session already exists, sends the message to the existing session without changing its mode
+- In plan mode, Claude can only use Read, Glob, Grep, Bash (read-only), and plan management tools
+- Cannot write or edit files - focuses on exploration and planning
+- Creates an implementation plan that can be approved via Telegram UI
+- Use `/code` to exit plan mode and proceed with implementation
+- Plan state is stored in `/tmp/plan-state-<session-id>.json` and `/tmp/plan-state-pending.json`
 
 ### Runtime Files
 

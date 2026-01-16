@@ -17,6 +17,7 @@ import {
   getPermissionMode,
   setPermissionMode,
   ALLOW_TELEGRAM_PERMISSIONS_MODE,
+  PlanStateManager,
 } from "../config";
 import { isAuthorized, validateProjectPath } from "../security";
 import { auditLog } from "../utils";
@@ -47,6 +48,8 @@ export async function handleStart(ctx: Context): Promise<void> {
       `Permission mode: ${permMode}\n\n` +
       `<b>Commands:</b>\n` +
       `/new - Start fresh session\n` +
+      `/plan - Start in planning mode\n` +
+      `/code - Exit plan mode\n` +
       `/stop - Stop current query\n` +
       `/status - Show detailed status\n` +
       `/project - Switch project directory\n` +
@@ -442,55 +445,139 @@ export async function handlePermissionsCommand(
 }
 
 /**
- * /plan - Enter plan mode (read-only exploration).
+ * /plan - Start a new session in plan mode (read-only exploration).
  */
 export async function handlePlan(ctx: Context): Promise<void> {
   const userId = ctx.from?.id;
+  const username = ctx.from?.username || "unknown";
+  const chatId = ctx.chat?.id;
 
   if (!isAuthorized(userId, ALLOWED_USERS)) {
     await ctx.reply("Unauthorized.");
     return;
   }
 
-  if (!session.isActive || !session.sessionId) {
-    await ctx.reply("❌ No active session. Send a message first to start a session.");
+  // Parse message from command args
+  const args = ctx.message?.text?.split(" ") || [];
+  const message = args.slice(1).join(" ").trim();
+
+  // If no message provided, show usage
+  if (!message) {
+    await ctx.reply(
+      `📋 <b>Plan Mode</b>\n\n` +
+        `Start a new session in read-only planning mode.\n\n` +
+        `<b>Usage:</b> <code>/plan &lt;your task description&gt;</code>\n\n` +
+        `Example: <code>/plan add user authentication with JWT</code>`,
+      { parse_mode: "HTML" }
+    );
     return;
   }
 
-  // Create plan mode state
-  const stateFile = `/tmp/plan-state-${session.sessionId}.json`;
-  const state = {
-    session_id: session.sessionId,
-    plan_mode_enabled: true,
-    active_plan_file: null,
-    plan_created_at: new Date().toISOString(),
-    restricted_tools: [
-      "Read",
-      "Glob",
-      "Grep",
-      "Bash",
-      "WritePlan",
-      "UpdatePlan",
-      "ExitPlanMode",
-    ],
-  };
-
-  await Bun.write(stateFile, JSON.stringify(state, null, 2));
-
-  await ctx.reply(
-    "📋 <b>Plan mode activated</b>\n\n" +
-      "You are now in READ-ONLY exploration mode. Claude can:\n" +
-      "• Read and explore the codebase\n" +
-      "• Run read-only Bash commands\n" +
-      "• Create and update implementation plans\n\n" +
-      "Claude <b>cannot</b>:\n" +
-      "• Write or edit files\n" +
-      "• Make any system modifications\n\n" +
-      "Use /code to exit plan mode and proceed with implementation.",
-    {
-      parse_mode: "HTML",
+  // Only create new session if none exists
+  if (!session.isActive) {
+    // Check if query is running
+    if (session.isRunning) {
+      const result = await session.stop();
+      if (result) {
+        await Bun.sleep(100);
+        session.clearStopRequested();
+      }
     }
-  );
+
+    // Clear session
+    await session.kill();
+
+    // Create pending plan mode state using PlanStateManager
+    const planStateManager = new PlanStateManager();
+    await planStateManager.transition({ type: "ENTER_PLAN_MODE" });
+
+    await ctx.reply(
+      "📋 <b>Starting plan mode...</b>\n\n" +
+        "READ-ONLY exploration mode activated. Claude will explore the codebase and create an implementation plan.",
+      {
+        parse_mode: "HTML",
+      }
+    );
+  } else {
+    // Session exists, just send message to it
+    await ctx.reply(
+      "📋 <b>Sending to existing session...</b>",
+      {
+        parse_mode: "HTML",
+      }
+    );
+  }
+
+  // Import streaming utilities
+  const { StreamingState, createStatusCallback } = await import("./streaming");
+  const { startTypingIndicator } = await import("../utils");
+
+  // Store message for retry
+  session.lastMessage = message;
+
+  // Start processing
+  const stopProcessing = session.startProcessing();
+  const typing = startTypingIndicator(ctx);
+
+  let streamingState = new StreamingState();
+  let statusCallback = createStatusCallback(ctx, streamingState);
+
+  const MAX_RETRIES = 1;
+
+  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    try {
+      const response = await session.sendMessageStreaming(
+        message,
+        username,
+        userId!,
+        statusCallback,
+        chatId,
+        ctx
+      );
+
+      auditLog(userId!, username, "PLAN", message, response);
+      break;
+    } catch (error) {
+      const errorStr = String(error);
+      const isClaudeCodeCrash = errorStr.includes("exited with code");
+
+      // Clean up any partial messages
+      for (const toolMsg of streamingState.toolMessages) {
+        try {
+          await ctx.api.deleteMessage(toolMsg.chat.id, toolMsg.message_id);
+        } catch {}
+      }
+
+      // Retry on crash
+      if (isClaudeCodeCrash && attempt < MAX_RETRIES) {
+        console.log(
+          `Claude Code crashed, retrying (attempt ${attempt + 2}/${
+            MAX_RETRIES + 1
+          })...`
+        );
+        await session.kill();
+        await ctx.reply(`⚠️ Claude crashed, retrying...`);
+        streamingState = new StreamingState();
+        statusCallback = createStatusCallback(ctx, streamingState);
+        continue;
+      }
+
+      console.error("Error processing plan message:", error);
+
+      if (errorStr.includes("abort") || errorStr.includes("cancel")) {
+        const wasInterrupt = session.consumeInterruptFlag();
+        if (!wasInterrupt) {
+          await ctx.reply("🛑 Query stopped.");
+        }
+      } else {
+        await ctx.reply(`❌ Error: ${errorStr.slice(0, 200)}`);
+      }
+      break;
+    }
+  }
+
+  stopProcessing();
+  typing.stop();
 }
 
 /**
@@ -509,25 +596,15 @@ export async function handleCode(ctx: Context): Promise<void> {
     return;
   }
 
-  // Check if plan mode is active
-  const stateFile = `/tmp/plan-state-${session.sessionId}.json`;
-  const file = Bun.file(stateFile);
-
-  if (!(await file.exists())) {
+  // Check if plan mode is active using session's planStateManager
+  await session.planStateManager.load();
+  if (!session.planStateManager.isEnabled()) {
     await ctx.reply("ℹ️ Plan mode is not active.");
     return;
   }
 
-  const state = JSON.parse(await file.text());
-
-  if (!state.plan_mode_enabled) {
-    await ctx.reply("ℹ️ Plan mode is not active.");
-    return;
-  }
-
-  // Disable plan mode
-  state.plan_mode_enabled = false;
-  await Bun.write(stateFile, JSON.stringify(state, null, 2));
+  // Disable plan mode using state transition
+  await session.planStateManager.transition({ type: "EXIT_PLAN_MODE" });
 
   await ctx.reply(
     "💻 <b>Plan mode exited</b>\n\n" +

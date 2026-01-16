@@ -17,10 +17,25 @@ import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
-import { homedir } from "os";
+import {
+  PLANS_DIR,
+  PLAN_MODE_LOG_FILE,
+  PENDING_STATE_FILE,
+  RESTRICTED_TOOLS,
+  getStateFile,
+} from "../src/plan-mode-constants";
 
-const HOME = homedir();
-const PLANS_DIR = `${HOME}/.claude/plans`;
+// File-based logging since stderr might not be visible
+async function log(msg: string) {
+  const timestamp = new Date().toISOString();
+  const line = `[${timestamp}] ${msg}\n`;
+  console.error(line.trim());
+  try {
+    await Bun.write(PLAN_MODE_LOG_FILE, (await Bun.file(PLAN_MODE_LOG_FILE).text().catch(() => "")) + line);
+  } catch (e) {
+    // Ignore write errors
+  }
+}
 
 // Word lists for random filename generation
 const ADJECTIVES = [
@@ -102,7 +117,7 @@ function generatePlanFilename(): string {
 
 // Read plan state file
 async function getPlanState(sessionId: string): Promise<any> {
-  const stateFile = `/tmp/plan-state-${sessionId}.json`;
+  const stateFile = getStateFile(sessionId);
   const file = Bun.file(stateFile);
   if (!(await file.exists())) {
     return null;
@@ -112,7 +127,7 @@ async function getPlanState(sessionId: string): Promise<any> {
 
 // Write plan state file
 async function setPlanState(sessionId: string, state: any): Promise<void> {
-  const stateFile = `/tmp/plan-state-${sessionId}.json`;
+  const stateFile = getStateFile(sessionId);
   await Bun.write(stateFile, JSON.stringify(state, null, 2));
 }
 
@@ -140,6 +155,7 @@ const server = new Server(
 
 // List available tools
 server.setRequestHandler(ListToolsRequestSchema, async () => {
+  await log("ListTools called - returning 4 tools");
   return {
     tools: [
       {
@@ -197,13 +213,56 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
   };
 });
 
+// Find session ID - env var may not be available in child process
+async function findSessionId(): Promise<string> {
+  // First try env var
+  if (process.env.TELEGRAM_SESSION_ID) {
+    return process.env.TELEGRAM_SESSION_ID;
+  }
+
+  // Fallback: find most recent plan-state file
+  const { readdir, stat } = await import("fs/promises");
+  const pendingFilename = PENDING_STATE_FILE.split("/").pop();
+  try {
+    const files = await readdir("/tmp");
+    const stateFiles = files.filter(f => f.startsWith("plan-state-") && f.endsWith(".json") && f !== pendingFilename);
+
+    if (stateFiles.length === 0) {
+      return "";
+    }
+
+    // Find most recently modified
+    let newest = { file: "", mtime: 0 };
+    for (const f of stateFiles) {
+      const s = await stat(`/tmp/${f}`);
+      if (s.mtimeMs > newest.mtime) {
+        newest = { file: f, mtime: s.mtimeMs };
+      }
+    }
+
+    // Extract session ID from filename: plan-state-{sessionId}.json
+    const match = newest.file.match(/plan-state-(.+)\.json/);
+    if (match && match[1]) {
+      await log(`Found session ID from file: ${match[1]}`);
+      return match[1];
+    }
+  } catch (e) {
+    await log(`Error finding session ID: ${e}`);
+  }
+
+  return "";
+}
+
 // Handle tool calls
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
-  const sessionId = process.env.TELEGRAM_SESSION_ID || "";
+  const sessionId = await findSessionId();
   const chatId = process.env.TELEGRAM_CHAT_ID || "";
 
+  // Debug logging
+  await log(`Tool: ${request.params.name}, SessionID: ${sessionId}, ChatID: ${chatId}`);
+
   if (!sessionId) {
-    throw new Error("TELEGRAM_SESSION_ID environment variable not set");
+    throw new Error("Could not find session ID (env var not set and no state files found)");
   }
 
   // EnterPlanMode
@@ -215,15 +274,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       plan_mode_enabled: true,
       active_plan_file: null,
       plan_created_at: new Date().toISOString(),
-      restricted_tools: [
-        "Read",
-        "Glob",
-        "Grep",
-        "Bash",
-        "WritePlan",
-        "UpdatePlan",
-        "ExitPlanMode",
-      ],
+      restricted_tools: [...RESTRICTED_TOOLS],
     };
 
     await setPlanState(sessionId, state);
@@ -240,17 +291,21 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
   // WritePlan
   if (request.params.name === "WritePlan") {
+    await log(`WritePlan called for session ${sessionId}`);
     const args = request.params.arguments as { content?: string };
     const content = args.content;
 
     if (!content) {
+      await log(`WritePlan ERROR: content parameter is required`);
       throw new Error("content parameter is required");
     }
 
+    await log(`WritePlan content length: ${content.length}`);
     await ensurePlansDir();
 
     // Check if active plan already exists
     const state = await getPlanState(sessionId);
+    await log(`Current state: ${JSON.stringify(state)}`);
     if (state?.active_plan_file) {
       throw new Error(
         `Active plan already exists: ${state.active_plan_file}. Use UpdatePlan to modify it.`
@@ -286,24 +341,19 @@ status: draft
 
     const planPath = `${PLANS_DIR}/${filename}`;
     await Bun.write(planPath, frontmatter + content);
+    await log(`Wrote plan file: ${planPath}`);
 
     // Update state
     const newState = state || {
       session_id: sessionId,
       plan_mode_enabled: true,
       plan_created_at: new Date().toISOString(),
-      restricted_tools: [
-        "Read",
-        "Glob",
-        "Grep",
-        "Bash",
-        "WritePlan",
-        "UpdatePlan",
-        "ExitPlanMode",
-      ],
+      restricted_tools: [...RESTRICTED_TOOLS],
     };
     newState.active_plan_file = filename;
+    await log(`Setting active_plan_file to: ${filename}`);
     await setPlanState(sessionId, newState);
+    await log(`State updated successfully`);
 
     return {
       content: [
@@ -378,12 +428,14 @@ status: draft
 
   // ExitPlanMode
   if (request.params.name === "ExitPlanMode") {
+    await log(`ExitPlanMode called for session ${sessionId}`);
     const state = await getPlanState(sessionId);
+    await log(`ExitPlanMode state: ${JSON.stringify(state)}`);
 
     if (!state?.active_plan_file) {
-      throw new Error(
-        "No active plan file. Use WritePlan to create a plan before exiting plan mode."
-      );
+      const errorMsg = `No active plan file. Use WritePlan to create a plan before exiting plan mode. State: ${JSON.stringify(state)}`;
+      await log(`ERROR: ${errorMsg}`);
+      throw new Error(errorMsg);
     }
 
     const planPath = `${PLANS_DIR}/${state.active_plan_file}`;
@@ -396,32 +448,18 @@ status: draft
     }
 
     const planContent = await file.text();
-
-    // Create approval request
     const requestId = crypto.randomUUID().slice(0, 8);
-    const approvalData = {
-      request_id: requestId,
-      chat_id: chatId,
-      plan_file: state.active_plan_file,
-      plan_content: planContent,
-      session_id: sessionId,
-      status: "pending",
-      created_at: new Date().toISOString(),
-      updated_at: new Date().toISOString(),
-    };
-
-    const approvalFile = `/tmp/plan-${requestId}.json`;
-    await Bun.write(approvalFile, JSON.stringify(approvalData, null, 2));
 
     // Update state to indicate approval is pending
     state.plan_approval_pending = true;
     await setPlanState(sessionId, state);
 
+    // Return plan data in a structured format for in-memory handling
     return {
       content: [
         {
           type: "text" as const,
-          text: "[Plan approval buttons sent to user. STOP HERE - do not output any more text. Wait for user to tap a button.]",
+          text: `PLAN_APPROVAL_REQUEST|${requestId}|${state.active_plan_file}|${planContent}`,
         },
       ],
     };
@@ -432,9 +470,13 @@ status: draft
 
 // Run the server
 async function main() {
+  await log("Plan Mode MCP server starting...");
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  console.error("Plan Mode MCP server running on stdio");
+  await log("Plan Mode MCP server connected and running on stdio");
 }
 
-main().catch(console.error);
+main().catch(async (err) => {
+  await log(`FATAL ERROR: ${err}`);
+  console.error(err);
+});

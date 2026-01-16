@@ -6,19 +6,8 @@
 
 import type { Context } from "grammy";
 import { InlineKeyboard } from "grammy";
-import { unlinkSync } from "fs";
 import { session } from "../session";
-
-export interface PlanApprovalRequest {
-  request_id: string;
-  chat_id: number;
-  plan_file: string;
-  plan_content: string;
-  session_id: string;
-  status: "pending" | "sent" | "approved" | "rejected";
-  created_at: string;
-  updated_at: string;
-}
+import { escapeHtml } from "../formatting";
 
 /**
  * Create inline keyboard for plan approval.
@@ -34,69 +23,62 @@ export function createPlanApprovalKeyboard(requestId: string): InlineKeyboard {
 }
 
 /**
- * Check for pending plan approval requests and display them.
+ * Display plan approval UI with inline buttons (in-memory version).
  */
-export async function checkPendingPlanApprovals(
+export async function displayPlanApproval(
   ctx: Context,
-  chatId: number
+  planFile: string,
+  planContent: string,
+  requestId: string
 ): Promise<void> {
-  // Scan /tmp for plan-*.json files
-  const tmpDir = "/tmp";
-  const files: string[] = [];
-
+  console.log(`[PLAN-APPROVAL] displayPlanApproval called with planFile=${planFile}, requestId=${requestId}`);
   try {
-    for await (const entry of new Bun.Glob("plan-*.json").scan(tmpDir)) {
-      files.push(`${tmpDir}/${entry}`);
-    }
-  } catch (error) {
-    console.debug("Error scanning for plan approvals:", error);
-    return;
-  }
+    // Extract plan content without frontmatter
+    const planWithoutFrontmatter = planContent.replace(
+      /^---\n[\s\S]*?\n---\n\n/,
+      ""
+    );
 
-  // Process each pending request
-  for (const filePath of files) {
-    try {
-      const file = Bun.file(filePath);
-      if (!(await file.exists())) continue;
+    console.log(`[PLAN-APPROVAL] Sending header message`);
+    // Send header message
+    const headerMessage = `📋 <b>Implementation Plan Ready</b>\n\nFile: <code>${planFile}</code>\n`;
+    await ctx.reply(headerMessage, { parse_mode: "HTML" });
+    console.log(`[PLAN-APPROVAL] Header sent`);
 
-      const data: PlanApprovalRequest = JSON.parse(await file.text());
+    // Send plan content - as message if small, as document if large
+    const MESSAGE_LIMIT = 3800; // Leave room for HTML formatting
 
-      // Skip if not for this chat or already sent
-      if (data.chat_id !== chatId) continue;
-      if (data.status !== "pending") continue;
-
-      // Extract plan summary (first 500 chars without frontmatter)
-      const planWithoutFrontmatter = data.plan_content.replace(
-        /^---\n[\s\S]*?\n---\n\n/,
-        ""
-      );
-      const planSummary =
-        planWithoutFrontmatter.length > 500
-          ? planWithoutFrontmatter.slice(0, 500) + "..."
-          : planWithoutFrontmatter;
-
-      // Send approval message with buttons
-      const message = `📋 <b>Implementation Plan Ready</b>\n\nFile: <code>${data.plan_file}</code>\n\n<pre>${planSummary}</pre>\n\n<b>Review and approve:</b>`;
-
-      const keyboard = createPlanApprovalKeyboard(data.request_id);
-
-      await ctx.reply(message, {
+    if (planWithoutFrontmatter.length <= MESSAGE_LIMIT) {
+      // Small enough for a message - escape HTML and send
+      const escapedPlan = escapeHtml(planWithoutFrontmatter);
+      await ctx.reply(`<pre>${escapedPlan}</pre>`, {
         parse_mode: "HTML",
-        reply_markup: keyboard,
       });
-
-      // Mark as sent
-      data.status = "sent";
-      data.updated_at = new Date().toISOString();
-      await Bun.write(filePath, JSON.stringify(data, null, 2));
-    } catch (error) {
-      console.error(`Error processing plan approval ${filePath}:`, error);
+    } else {
+      // Too large - send as document
+      const { InputFile } = await import("grammy");
+      const buffer = Buffer.from(planContent, "utf-8");
+      await ctx.replyWithDocument(new InputFile(buffer, planFile), {
+        caption: "📄 Plan file (too large for message)",
+      });
     }
+
+    // Send approval buttons as final message
+    console.log(`[PLAN-APPROVAL] Sending approval buttons`);
+    const keyboard = createPlanApprovalKeyboard(requestId);
+    await ctx.reply(`<b>Review and approve:</b>`, {
+      parse_mode: "HTML",
+      reply_markup: keyboard,
+    });
+    console.log(`[PLAN-APPROVAL] Approval dialog complete`);
+  } catch (error) {
+    console.error(`[PLAN-APPROVAL] Error displaying plan approval:`, error);
+    await ctx.reply("❌ Error displaying plan. Please check logs.");
   }
 }
 
 /**
- * Handle plan approval callback.
+ * Handle plan approval callback using PlanStateManager.
  */
 export async function handlePlanApprovalCallback(
   ctx: Context,
@@ -110,114 +92,63 @@ export async function handlePlanApprovalCallback(
   }
 
   const requestId = parts[1]!;
-  const action = parts[2]!; // "accept", "reject", or "clear"
+  const action = parts[2]! as "accept" | "reject" | "clear";
 
-  const requestFile = `/tmp/plan-${requestId}.json`;
-  let requestData: PlanApprovalRequest;
+  // Use async handler to perform state transition
+  const [success, message, shouldContinue] = await session.handlePlanApprovalAsync(
+    requestId,
+    action
+  );
 
-  try {
-    const file = Bun.file(requestFile);
-    const text = await file.text();
-    requestData = JSON.parse(text);
-  } catch (error) {
-    await ctx.answerCallbackQuery({ text: "Request expired" });
+  if (!success) {
+    await ctx.answerCallbackQuery({ text: message });
     return;
   }
 
+  // Update message to show result
+  await ctx.editMessageText(message, {
+    parse_mode: "HTML",
+  });
+
+  // Handle different actions
   if (action === "accept") {
-    // Update message to show approval
-    await ctx.editMessageText(
-      `✅ <b>Plan Accepted</b>\n\nFile: <code>${requestData.plan_file}</code>\n\nContinuing with implementation...`,
-      {
-        parse_mode: "HTML",
-      }
-    );
-
-    // Update request file
-    requestData.status = "approved";
-    requestData.updated_at = new Date().toISOString();
-    await Bun.write(requestFile, JSON.stringify(requestData));
-
-    // Update plan mode state - disable plan mode so execution can proceed
-    const stateFile = `/tmp/plan-state-${requestData.session_id}.json`;
-    const stateFileObj = Bun.file(stateFile);
-    if (await stateFileObj.exists()) {
-      const state = JSON.parse(await stateFileObj.text());
-      state.plan_mode_enabled = false;
-      state.plan_approval_pending = false;
-      await Bun.write(stateFile, JSON.stringify(state, null, 2));
-    }
-
     await ctx.answerCallbackQuery({ text: "✅ Plan approved" });
+
+    // Continue with implementation - send message to resume session
+    if (shouldContinue && ctx.chat) {
+      const { StreamingState, createStatusCallback } = await import("./streaming");
+      const { startTypingIndicator } = await import("../utils");
+      const state = new StreamingState();
+      const statusCallback = createStatusCallback(ctx, state);
+
+      // Start typing indicator
+      const typing = startTypingIndicator(ctx);
+
+      try {
+        console.log("[PLAN-APPROVAL] Resuming session for implementation");
+        await session.sendMessageStreaming(
+          "The plan has been approved. Proceed with the implementation as outlined in the plan.",
+          ctx.from?.username || "user",
+          ctx.from?.id || 0,
+          statusCallback,
+          ctx.chat.id,
+          ctx
+        );
+        console.log("[PLAN-APPROVAL] Implementation response received");
+      } catch (e) {
+        console.error("[PLAN-APPROVAL] Error resuming session:", e);
+        await ctx.reply("❌ Error starting implementation. Please try again.");
+      } finally {
+        typing.stop();
+      }
+    }
   } else if (action === "reject") {
-    // Update message to show rejection
-    await ctx.editMessageText(
-      `❌ <b>Plan Rejected</b>\n\nFile: <code>${requestData.plan_file}</code>\n\nThe plan has been rejected. Session continues without this plan.`,
-      {
-        parse_mode: "HTML",
-      }
-    );
-
-    // Update request file
-    requestData.status = "rejected";
-    requestData.updated_at = new Date().toISOString();
-    await Bun.write(requestFile, JSON.stringify(requestData));
-
-    // Delete plan file
-    const HOME = require("os").homedir();
-    const planPath = `${HOME}/.claude/plans/${requestData.plan_file}`;
-    try {
-      unlinkSync(planPath);
-      console.log(`Deleted rejected plan: ${planPath}`);
-    } catch (error) {
-      console.debug("Failed to delete plan file:", error);
-    }
-
-    // Update plan mode state - clear plan but keep session
-    const stateFile = `/tmp/plan-state-${requestData.session_id}.json`;
-    const stateFileObj = Bun.file(stateFile);
-    if (await stateFileObj.exists()) {
-      const state = JSON.parse(await stateFileObj.text());
-      state.plan_mode_enabled = false;
-      state.active_plan_file = null;
-      state.plan_approval_pending = false;
-      await Bun.write(stateFile, JSON.stringify(state, null, 2));
-    }
-
     await ctx.answerCallbackQuery({ text: "❌ Plan rejected" });
+    // Session continues but plan is discarded
   } else if (action === "clear") {
-    // Update message to show context cleared
-    await ctx.editMessageText(
-      `🗑️ <b>Context Cleared</b>\n\nFile: <code>${requestData.plan_file}</code>\n\nSession cleared. The plan has been saved and can be accessed later.`,
-      {
-        parse_mode: "HTML",
-      }
-    );
-
-    // Update request file
-    requestData.status = "rejected";
-    requestData.updated_at = new Date().toISOString();
-    await Bun.write(requestFile, JSON.stringify(requestData));
-
-    // Kill the session but keep plan file
+    // Kill the session
     await session.kill();
     console.log("Session cleared after plan approval clear");
-
-    // Clear plan mode state
-    const stateFile = `/tmp/plan-state-${requestData.session_id}.json`;
-    try {
-      unlinkSync(stateFile);
-    } catch (error) {
-      console.debug("Failed to delete plan state file:", error);
-    }
-
     await ctx.answerCallbackQuery({ text: "🗑️ Context cleared" });
-  }
-
-  // Clean up request file after handling
-  try {
-    unlinkSync(requestFile);
-  } catch (error) {
-    console.debug("Failed to delete request file:", error);
   }
 }

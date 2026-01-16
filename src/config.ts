@@ -12,6 +12,10 @@ import type { McpServerConfig } from "./types";
 
 const HOME = homedir();
 
+// Config directory (must be defined early for loadPersistentConfig)
+export const CONFIG_DIR = `${HOME}/.sickfar`;
+export const PERSISTENT_CONFIG_FILE = `${CONFIG_DIR}/settings.json`;
+
 // Ensure necessary paths are available for Claude's bash commands
 // LaunchAgents don't inherit the full shell environment
 const EXTRA_PATHS = [
@@ -57,13 +61,82 @@ export function getWorkingDir(): string {
 export function setWorkingDir(path: string): void {
   currentWorkingDir = path;
   rebuildAllowedPaths();
+  savePersistentConfig();
 }
 
 // Reset working directory to PROJECTS_ROOT
 export function resetWorkingDir(): void {
   currentWorkingDir = PROJECTS_ROOT;
   rebuildAllowedPaths();
+  savePersistentConfig();
 }
+
+// Save persistent configuration
+function savePersistentConfig(): void {
+  try {
+    // Ensure config directory exists
+    const fs = require("fs");
+    if (!fs.existsSync(CONFIG_DIR)) {
+      fs.mkdirSync(CONFIG_DIR, { recursive: true });
+    }
+
+    const config = {
+      working_dir: currentWorkingDir,
+      saved_at: new Date().toISOString(),
+    };
+    Bun.write(PERSISTENT_CONFIG_FILE, JSON.stringify(config, null, 2));
+  } catch (error) {
+    console.warn(`Failed to save persistent config: ${error}`);
+  }
+}
+
+// Load persistent configuration
+function loadPersistentConfig(): void {
+  try {
+    const fs = require("fs");
+
+    // Check if config file exists
+    if (!fs.existsSync(PERSISTENT_CONFIG_FILE)) {
+      console.log(`No persistent config file found at ${PERSISTENT_CONFIG_FILE}`);
+      return;
+    }
+
+    const text = fs.readFileSync(PERSISTENT_CONFIG_FILE, "utf-8");
+    const config = JSON.parse(text);
+    console.log(`Loaded config from ${PERSISTENT_CONFIG_FILE}:`, config);
+
+    if (config.working_dir && typeof config.working_dir === "string") {
+      // Validate that the saved path still exists and is within PROJECTS_ROOT
+      const savedPath = config.working_dir;
+      console.log(`Validating saved path: ${savedPath} (PROJECTS_ROOT: ${PROJECTS_ROOT})`);
+
+      // Check if path is within PROJECTS_ROOT
+      if (savedPath.startsWith(PROJECTS_ROOT)) {
+        // Check if directory exists
+        try {
+          const stat = fs.statSync(savedPath);
+          if (stat.isDirectory()) {
+            currentWorkingDir = savedPath;
+            console.log(`✓ Restored working directory: ${savedPath}`);
+            return;
+          }
+        } catch (err) {
+          // Directory doesn't exist anymore, use default
+          console.log(`✗ Saved directory no longer exists: ${savedPath}, using default (error: ${err})`);
+        }
+      } else {
+        console.log(`✗ Saved path outside PROJECTS_ROOT: ${savedPath}, using default (PROJECTS_ROOT: ${PROJECTS_ROOT})`);
+      }
+    } else {
+      console.log(`✗ No valid working_dir in config`);
+    }
+  } catch (error) {
+    console.warn(`Failed to load persistent config: ${error}`);
+  }
+}
+
+// Load persistent config on startup (before rebuilding allowed paths)
+loadPersistentConfig();
 
 export const OPENAI_API_KEY = process.env.OPENAI_API_KEY || "";
 
@@ -117,7 +190,7 @@ function buildDefaultAllowedPaths(): string[] {
     `${HOME}/Documents`,
     `${HOME}/Downloads`,
     `${HOME}/Desktop`,
-    `${HOME}/.claude`, // Claude Code data (plans, settings)
+    `${HOME}/.sickfar`, // Bot data (plans, settings, logs)
   ];
 }
 
@@ -147,7 +220,16 @@ function buildSafetyPrompt(allowedPaths: string[]): string {
     .join("\n");
 
   return `
-CRITICAL SAFETY RULES FOR TELEGRAM BOT:
+TELEGRAM BOT CONTEXT:
+
+You are accessed via Telegram. Respond DIRECTLY to what the user is asking.
+
+- Take user messages literally and respond to what they're asking
+- If a message seems like a command (e.g., "git status", "run tests"), interpret it as a request to execute that command
+- If a message is ambiguous, ask for clarification rather than giving a generic response
+- The user expects you to DO what they ask, not explain what you COULD do
+
+CRITICAL SAFETY RULES:
 
 1. NEVER delete, remove, or overwrite files without EXPLICIT confirmation from the user.
    - If user asks to delete something, respond: "Are you sure you want to delete [file]? Reply 'yes delete it' to confirm."
@@ -253,6 +335,29 @@ export const RATE_LIMIT_WINDOW = parseInt(
 export const SESSION_FILE = "/tmp/claude-telegram-session.json";
 export const RESTART_FILE = "/tmp/claude-telegram-restart.json";
 export const TEMP_DIR = "/tmp/telegram-bot";
+
+// ============== Plan Mode Configuration ==============
+
+// Re-export from new plan-mode module
+import * as PlanMode from "./plan-mode";
+export {
+  getStateFile as getPlanStateFile,
+  isExitPlanModeTool,
+  isWriteTool,
+  PlanStateManager,
+} from "./plan-mode";
+
+// Expose as PLAN_MODE object for backward compatibility
+export const PLAN_MODE = {
+  PLANS_DIR: PlanMode.PLANS_DIR,
+  LOG_FILE: PlanMode.PLAN_MODE_LOG_FILE,
+  STATE_FILE_PATTERN: PlanMode.STATE_FILE_PATTERN,
+  PENDING_STATE_FILE: PlanMode.PENDING_STATE_FILE,
+  RESTRICTED_TOOLS: PlanMode.RESTRICTED_TOOLS,
+  EXIT_PLAN_MODE_TOOLS: PlanMode.EXIT_PLAN_MODE_TOOLS,
+  WRITE_TOOLS: PlanMode.WRITE_TOOLS,
+  SYSTEM_PROMPT: PlanMode.PLAN_MODE_SYSTEM_PROMPT,
+} as const;
 
 // Temp paths that are always allowed for bot operations
 export const TEMP_PATHS = ["/tmp/", "/private/tmp/", "/var/folders/"];
