@@ -339,9 +339,17 @@ export const BUTTON_LABEL_MAX_LENGTH = 30; // Max chars for inline button labels
 // ============== Audit Logging ==============
 
 export const AUDIT_LOG_PATH =
-  process.env.AUDIT_LOG_PATH || "/tmp/claude-telegram-audit.log";
+  process.env.AUDIT_LOG_PATH || `${CONFIG_DIR}/logs/audit.log`;
 export const AUDIT_LOG_JSON =
   (process.env.AUDIT_LOG_JSON || "false").toLowerCase() === "true";
+export const AUDIT_LOG_MAX_SIZE_MB = parseInt(
+  process.env.AUDIT_LOG_MAX_SIZE_MB || "10",
+  10
+);
+export const AUDIT_LOG_MAX_FILES = parseInt(
+  process.env.AUDIT_LOG_MAX_FILES || "5",
+  10
+);
 
 // ============== Rate Limiting ==============
 
@@ -358,7 +366,7 @@ export const RATE_LIMIT_WINDOW = parseInt(
 
 // ============== File Paths ==============
 
-export const SESSION_FILE = "/tmp/claude-telegram-session.json";
+// Sessions now stored in ~/.claude/projects/<project-path>/ (Claude Code standard)
 export const RESTART_FILE = "/tmp/claude-telegram-restart.json";
 export const TEMP_DIR = "/tmp/telegram-bot";
 

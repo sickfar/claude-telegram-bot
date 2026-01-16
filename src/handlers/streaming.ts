@@ -15,6 +15,8 @@ import {
   STREAMING_THROTTLE_MS,
   BUTTON_LABEL_MAX_LENGTH,
 } from "../config";
+import { askUserStore } from "../ask-user-store";
+import { permissionStore } from "../permission-store";
 
 /**
  * Create inline keyboard for ask_user options.
@@ -90,8 +92,36 @@ export async function checkPendingPermissionRequests(
   ctx: Context,
   chatId: number
 ): Promise<boolean> {
-  const glob = new Bun.Glob("perm-*.json");
+  const pendingRequests = permissionStore.getPendingForChat(chatId);
   let buttonsSent = false;
+
+  for (const request of pendingRequests) {
+    try {
+      const formatted = request.formatted_request || "Permission request";
+      const keyboard = createPermissionKeyboard(request.request_id);
+
+      await ctx.reply(`🔐 <b>Permission Required</b>\n\n${formatted}`, {
+        reply_markup: keyboard,
+        parse_mode: "HTML",
+      });
+      buttonsSent = true;
+
+      // Mark as sent in store
+      permissionStore.update(request.request_id, "sent");
+    } catch (error) {
+      console.warn(`Failed to send permission request ${request.request_id}:`, error);
+    }
+  }
+
+  return buttonsSent;
+}
+
+/**
+ * Sync ask-user requests from MCP server files to in-memory store.
+ * MCP server runs as separate process and writes to /tmp/ask-user-*.json
+ */
+async function syncAskUserFilesToStore(chatId: number): Promise<void> {
+  const glob = new Bun.Glob("ask-user-*.json");
 
   for await (const filename of glob.scan({ cwd: "/tmp", absolute: false })) {
     const filepath = `/tmp/${filename}`;
@@ -100,28 +130,35 @@ export async function checkPendingPermissionRequests(
       const text = await file.text();
       const data = JSON.parse(text);
 
-      // Only process pending requests for this chat
+      // Only sync pending requests for this chat that aren't already in store
       if (data.status !== "pending") continue;
       if (String(data.chat_id) !== String(chatId)) continue;
 
-      const formatted = data.formatted_request || "Permission request";
-      const keyboard = createPermissionKeyboard(data.request_id);
+      const requestId = data.request_id;
+      if (!requestId) continue;
 
-      await ctx.reply(`🔐 <b>Permission Required</b>\n\n${formatted}`, {
-        reply_markup: keyboard,
-        parse_mode: "HTML",
-      });
-      buttonsSent = true;
+      // Check if already in store
+      if (askUserStore.get(requestId)) continue;
 
-      // Mark as sent
-      data.status = "sent";
-      await Bun.write(filepath, JSON.stringify(data));
+      // Add to store
+      askUserStore.create(
+        requestId,
+        data.chat_id,
+        data.question || "",
+        data.options || []
+      );
+
+      // Delete the file (now in store)
+      try {
+        const fs = await import("fs");
+        fs.unlinkSync(filepath);
+      } catch (error) {
+        console.debug(`Failed to delete synced file ${filepath}:`, error);
+      }
     } catch (error) {
-      console.warn(`Failed to process permission file ${filepath}:`, error);
+      console.debug(`Failed to sync ask-user file ${filepath}:`, error);
     }
   }
-
-  return buttonsSent;
 }
 
 /**
@@ -131,35 +168,29 @@ export async function checkPendingAskUserRequests(
   ctx: Context,
   chatId: number
 ): Promise<boolean> {
-  const glob = new Bun.Glob("ask-user-*.json");
+  // First, sync any files from MCP server to store
+  await syncAskUserFilesToStore(chatId);
+
+  // Then get pending requests from store
+  const pendingRequests = askUserStore.getPendingForChat(chatId);
   let buttonsSent = false;
 
-  for await (const filename of glob.scan({ cwd: "/tmp", absolute: false })) {
-    const filepath = `/tmp/${filename}`;
+  for (const request of pendingRequests) {
     try {
-      const file = Bun.file(filepath);
-      const text = await file.text();
-      const data = JSON.parse(text);
-
-      // Only process pending requests for this chat
-      if (data.status !== "pending") continue;
-      if (String(data.chat_id) !== String(chatId)) continue;
-
-      const question = data.question || "Please choose:";
-      const options = data.options || [];
-      const requestId = data.request_id || "";
+      const question = request.question || "Please choose:";
+      const options = request.options || [];
+      const requestId = request.request_id || "";
 
       if (options.length > 0 && requestId) {
         const keyboard = createAskUserKeyboard(requestId, options);
         await ctx.reply(`❓ ${question}`, { reply_markup: keyboard });
         buttonsSent = true;
 
-        // Mark as sent
-        data.status = "sent";
-        await Bun.write(filepath, JSON.stringify(data));
+        // Mark as sent in store
+        askUserStore.markSent(requestId);
       }
     } catch (error) {
-      console.warn(`Failed to process ask-user file ${filepath}:`, error);
+      console.warn(`Failed to send ask-user request ${request.request_id}:`, error);
     }
   }
 

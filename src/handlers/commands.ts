@@ -210,7 +210,62 @@ export async function handleStatus(ctx: Context): Promise<void> {
 }
 
 /**
- * /resume - Resume the last session.
+ * Build inline keyboard for session selection.
+ */
+function buildSessionKeyboard(sessions: import("../types").SessionData[]): InlineKeyboard {
+  const keyboard = new InlineKeyboard();
+
+  for (const session of sessions) {
+    const shortId = session.session_id.slice(0, 8);
+    const icon = session.plan_mode_enabled ? "📋" : "🗂️";
+
+    // Get first message preview (max 40 chars for button)
+    const preview = session.last_message_preview || "Unknown";
+    const shortPreview = preview.length > 40 ? preview.slice(0, 37) + "..." : preview;
+
+    // Format: "🗂️ first message... | 2h ago"
+    const { formatRelativeTime } = require("../session-storage");
+    const timeAgo = session.last_activity
+      ? formatRelativeTime(session.last_activity)
+      : "unknown";
+
+    const label = `${icon} ${shortPreview} | ${timeAgo}`;
+    keyboard.text(label, `resume:${shortId}`).row();
+  }
+
+  // Add cancel button
+  keyboard.text("Cancel", "resume:cancel");
+
+  return keyboard;
+}
+
+/**
+ * Format session list as text.
+ */
+function formatSessionList(sessions: import("../types").SessionData[]): string {
+  const lines: string[] = [];
+
+  for (let i = 0; i < sessions.length; i++) {
+    const session = sessions[i]!;
+    const icon = session.plan_mode_enabled ? "📋" : "🗂️";
+
+    // Get first message preview (max 60 chars for list)
+    const preview = session.last_message_preview || "Unknown";
+    const shortPreview = preview.length > 60 ? preview.slice(0, 57) + "..." : preview;
+
+    const { formatRelativeTime } = require("../session-storage");
+    const timeAgo = session.last_activity
+      ? formatRelativeTime(session.last_activity)
+      : "unknown";
+
+    lines.push(`${i + 1}. ${icon} ${shortPreview} - ${timeAgo}`);
+  }
+
+  return lines.join("\n");
+}
+
+/**
+ * /resume - Resume a session from the list.
  */
 export async function handleResume(ctx: Context): Promise<void> {
   const userId = ctx.from?.id;
@@ -225,12 +280,24 @@ export async function handleResume(ctx: Context): Promise<void> {
     return;
   }
 
-  const [success, message] = await session.resumeLast();
-  if (success) {
-    await ctx.reply(`✅ ${message}`);
-  } else {
-    await ctx.reply(`❌ ${message}`);
+  // Load all sessions
+  const { loadSessionList } = await import("../session-storage");
+  const sessions = await loadSessionList();
+
+  // Handle no sessions
+  if (sessions.length === 0) {
+    await ctx.reply("❌ No saved sessions found.");
+    return;
   }
+
+  // Display session list with buttons (always, even for single session)
+  const keyboard = buildSessionKeyboard(sessions);
+  const listText = formatSessionList(sessions);
+
+  await ctx.reply(
+    `📋 <b>Select a session to resume:</b>\n\n${listText}`,
+    { parse_mode: "HTML", reply_markup: keyboard }
+  );
 }
 
 /**

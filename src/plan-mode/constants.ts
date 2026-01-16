@@ -17,7 +17,8 @@ export const SICKFAR_DIR = `${HOME}/.sickfar`;
 export const PLANS_DIR = `${SICKFAR_DIR}/plans`;
 export const PLAN_MODE_LOG_FILE = `${SICKFAR_DIR}/plan-mode-mcp.log`;
 
-// State file patterns
+// State file patterns (DEPRECATED - plan state is now in-memory only)
+// These paths are kept for backward compatibility with MCP server
 export const STATE_FILE_PATTERN = "/tmp/plan-state-{sessionId}.json";
 export const PENDING_STATE_FILE = "/tmp/plan-state-pending.json";
 

@@ -5,7 +5,6 @@
  */
 
 import type { Context } from "grammy";
-import { unlinkSync } from "fs";
 import { session } from "../session";
 import {
   ALLOWED_USERS,
@@ -16,6 +15,8 @@ import {
 import { isAuthorized } from "../security";
 import { auditLog, startTypingIndicator } from "../utils";
 import { StreamingState, createStatusCallback } from "./streaming";
+import { askUserStore } from "../ask-user-store";
+import { permissionStore } from "../permission-store";
 
 /**
  * Handle callback queries from inline keyboards.
@@ -58,6 +59,12 @@ export async function handleCallback(ctx: Context): Promise<void> {
       return;
     }
 
+    // Check for resume callback
+    if (callbackData.startsWith("resume:")) {
+      await handleResumeCallback(ctx, callbackData, chatId);
+      return;
+    }
+
     await ctx.answerCallbackQuery();
     return;
   }
@@ -71,20 +78,11 @@ export async function handleCallback(ctx: Context): Promise<void> {
   const requestId = parts[1]!;
   const optionIndex = parseInt(parts[2]!, 10);
 
-  // 3. Load request file
-  const requestFile = `/tmp/ask-user-${requestId}.json`;
-  let requestData: {
-    question: string;
-    options: string[];
-    status: string;
-  };
+  // 3. Load request from store
+  const requestData = askUserStore.get(requestId);
 
-  try {
-    const file = Bun.file(requestFile);
-    const text = await file.text();
-    requestData = JSON.parse(text);
-  } catch (error) {
-    console.error(`Failed to load ask-user request ${requestId}:`, error);
+  if (!requestData) {
+    console.error(`Failed to load ask-user request ${requestId}: not found in store`);
     await ctx.answerCallbackQuery({ text: "Request expired or invalid" });
     return;
   }
@@ -109,12 +107,8 @@ export async function handleCallback(ctx: Context): Promise<void> {
     text: `Selected: ${selectedOption.slice(0, 50)}`,
   });
 
-  // 7. Delete request file
-  try {
-    unlinkSync(requestFile);
-  } catch (error) {
-    console.debug("Failed to delete request file:", error);
-  }
+  // 7. Delete request from store
+  askUserStore.delete(requestId);
 
   // 8. Send the choice to Claude as a message
   const message = selectedOption;
@@ -187,19 +181,9 @@ async function handlePermissionCallback(
   const requestId = parts[1]!;
   const action = parts[2]!; // "allow", "deny", or "comment"
 
-  const requestFile = `/tmp/perm-${requestId}.json`;
-  let requestData: {
-    formatted_request: string;
-    status: string;
-    updated_at: string;
-    response?: string;
-  };
+  const requestData = permissionStore.get(requestId);
 
-  try {
-    const file = Bun.file(requestFile);
-    const text = await file.text();
-    requestData = JSON.parse(text);
-  } catch (error) {
+  if (!requestData) {
     await ctx.answerCallbackQuery({ text: "Request expired" });
     return;
   }
@@ -213,10 +197,8 @@ async function handlePermissionCallback(
       }
     );
 
-    // Update request file
-    requestData.status = "approved";
-    requestData.updated_at = new Date().toISOString();
-    await Bun.write(requestFile, JSON.stringify(requestData));
+    // Update request in store
+    permissionStore.update(requestId, "approved");
 
     await ctx.answerCallbackQuery({ text: "✅ Approved" });
   } else if (action === "deny") {
@@ -228,11 +210,8 @@ async function handlePermissionCallback(
       }
     );
 
-    // Update request file
-    requestData.status = "denied";
-    requestData.response = "Denied by user";
-    requestData.updated_at = new Date().toISOString();
-    await Bun.write(requestFile, JSON.stringify(requestData));
+    // Update request in store
+    permissionStore.update(requestId, "denied", "Denied by user");
 
     await ctx.answerCallbackQuery({ text: "❌ Denied" });
   } else if (action === "comment") {
@@ -244,10 +223,8 @@ async function handlePermissionCallback(
       }
     );
 
-    // Set a flag in the request file to indicate waiting for comment
-    requestData.status = "awaiting_comment";
-    requestData.updated_at = new Date().toISOString();
-    await Bun.write(requestFile, JSON.stringify(requestData));
+    // Update store to await comment
+    permissionStore.update(requestId, "awaiting_comment");
 
     await ctx.reply("Type your reason:", {
       reply_markup: { force_reply: true, selective: true },
@@ -305,4 +282,74 @@ async function handleModelCallback(
   await ctx.answerCallbackQuery({
     text: `Switched to ${requestedModel}`,
   });
+}
+
+/**
+ * Handle resume session callback.
+ */
+async function handleResumeCallback(
+  ctx: Context,
+  callbackData: string,
+  chatId: number
+): Promise<void> {
+  const parts = callbackData.split(":");
+  if (parts.length !== 2) {
+    await ctx.answerCallbackQuery({ text: "Invalid callback data" });
+    return;
+  }
+
+  const sessionIdShort = parts[1]!;
+
+  // Handle cancel
+  if (sessionIdShort === "cancel") {
+    await ctx.deleteMessage();
+    await ctx.answerCallbackQuery({ text: "Cancelled" });
+    return;
+  }
+
+  // Load session by short ID
+  const { loadSessionByShortId } = await import("../session-storage");
+  const [success, message, sessionData] = await loadSessionByShortId(sessionIdShort);
+
+  if (!success || !sessionData) {
+    await ctx.editMessageText(`❌ ${message}`);
+    await ctx.answerCallbackQuery({ text: "Failed to load session" });
+    return;
+  }
+
+  // Resume session
+  const [resumeSuccess, resumeMessage, lastMessages] = await session.resumeById(sessionData.session_id);
+
+  if (resumeSuccess) {
+    const projectName = sessionData.project_name || "Unknown";
+    const { formatRelativeTime } = await import("../session-storage");
+    const timeAgo = sessionData.last_activity
+      ? formatRelativeTime(sessionData.last_activity)
+      : "unknown";
+
+    await ctx.editMessageText(
+      `✅ <b>Resumed Session</b>\n\n` +
+      `Project: <code>${projectName}</code>\n` +
+      `Session: <code>${sessionData.session_id.slice(0, 8)}...</code>\n` +
+      `Last activity: ${timeAgo}`,
+      { parse_mode: "HTML" }
+    );
+    await ctx.answerCallbackQuery({ text: `✅ Resumed: ${projectName}` });
+
+    // Send last 3 messages for context
+    if (lastMessages && lastMessages.length > 0) {
+      let contextText = "📜 <b>Last messages:</b>\n\n";
+
+      for (const msg of lastMessages) {
+        const label = msg.role === "user" ? "👤 You" : "🤖 Claude";
+        const preview = msg.content.length > 300 ? msg.content.slice(0, 297) + "..." : msg.content;
+        contextText += `${label}:\n${preview}\n\n`;
+      }
+
+      await ctx.reply(contextText, { parse_mode: "HTML" });
+    }
+  } else {
+    await ctx.editMessageText(`❌ ${resumeMessage}`, { parse_mode: "HTML" });
+    await ctx.answerCallbackQuery({ text: "Failed to resume" });
+  }
 }

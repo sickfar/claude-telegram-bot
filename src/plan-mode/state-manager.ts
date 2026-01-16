@@ -23,15 +23,17 @@ import type {
 import { createEmptyState } from "./types";
 
 /**
- * Manages plan mode state with file persistence and state machine validation.
+ * Manages plan mode state with optional file persistence and state machine validation.
  */
 export class PlanStateManager {
   private state: PlanState = createEmptyState();
   private sessionId: string | null;
   private pendingApproval: PlanApprovalRequest | null = null;
+  private persistToFile: boolean;
 
-  constructor(sessionId: string | null = null) {
+  constructor(sessionId: string | null = null, persistToFile: boolean = false) {
     this.sessionId = sessionId;
+    this.persistToFile = persistToFile;
   }
 
   // ===== File I/O =====
@@ -103,9 +105,14 @@ export class PlanStateManager {
   }
 
   /**
-   * Save current state to file.
+   * Save current state to file (if persistence is enabled).
    */
   async save(): Promise<void> {
+    if (!this.persistToFile) {
+      console.log(`[PlanState] Skipping file save (in-memory mode)`);
+      return;
+    }
+
     const stateJson = JSON.stringify(this.state, null, 2);
 
     if (!this.sessionId) {

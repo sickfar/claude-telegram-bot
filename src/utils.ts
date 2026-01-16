@@ -11,10 +11,13 @@ import type { AuditEvent } from "./types";
 import {
   AUDIT_LOG_PATH,
   AUDIT_LOG_JSON,
+  AUDIT_LOG_MAX_SIZE_MB,
+  AUDIT_LOG_MAX_FILES,
   OPENAI_API_KEY,
   TRANSCRIPTION_PROMPT,
   TRANSCRIPTION_AVAILABLE,
 } from "./config";
+import { AuditLogger } from "./audit-logger";
 
 // ============== OpenAI Client ==============
 
@@ -25,34 +28,13 @@ if (OPENAI_API_KEY && TRANSCRIPTION_AVAILABLE) {
 
 // ============== Audit Logging ==============
 
-async function writeAuditLog(event: AuditEvent): Promise<void> {
-  try {
-    let content: string;
-    if (AUDIT_LOG_JSON) {
-      content = JSON.stringify(event) + "\n";
-    } else {
-      // Plain text format for readability
-      const lines = ["\n" + "=".repeat(60)];
-      for (const [key, value] of Object.entries(event)) {
-        let displayValue = value;
-        if (
-          (key === "content" || key === "response") &&
-          String(value).length > 500
-        ) {
-          displayValue = String(value).slice(0, 500) + "...";
-        }
-        lines.push(`${key}: ${displayValue}`);
-      }
-      content = lines.join("\n") + "\n";
-    }
-
-    // Append to audit log file
-    const fs = await import("fs/promises");
-    await fs.appendFile(AUDIT_LOG_PATH, content);
-  } catch (error) {
-    console.error("Failed to write audit log:", error);
-  }
-}
+// Create audit logger instance with rotation
+const auditLogger = new AuditLogger({
+  logPath: AUDIT_LOG_PATH,
+  maxSizeMB: AUDIT_LOG_MAX_SIZE_MB,
+  maxFiles: AUDIT_LOG_MAX_FILES,
+  jsonFormat: AUDIT_LOG_JSON,
+});
 
 export async function auditLog(
   userId: number,
@@ -72,7 +54,7 @@ export async function auditLog(
   if (response) {
     event.response = response;
   }
-  await writeAuditLog(event);
+  await auditLogger.log(event);
 }
 
 export async function auditLogAuth(
@@ -80,7 +62,7 @@ export async function auditLogAuth(
   username: string,
   authorized: boolean
 ): Promise<void> {
-  await writeAuditLog({
+  await auditLogger.log({
     timestamp: new Date().toISOString(),
     event: "auth",
     user_id: userId,
@@ -109,7 +91,7 @@ export async function auditLogTool(
   if (blocked && reason) {
     event.reason = reason;
   }
-  await writeAuditLog(event);
+  await auditLogger.log(event);
 }
 
 export async function auditLogError(
@@ -128,7 +110,7 @@ export async function auditLogError(
   if (context) {
     event.context = context;
   }
-  await writeAuditLog(event);
+  await auditLogger.log(event);
 }
 
 export async function auditLogRateLimit(
@@ -136,7 +118,7 @@ export async function auditLogRateLimit(
   username: string,
   retryAfter: number
 ): Promise<void> {
-  await writeAuditLog({
+  await auditLogger.log({
     timestamp: new Date().toISOString(),
     event: "rate_limit",
     user_id: userId,

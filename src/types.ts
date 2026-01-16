@@ -26,6 +26,11 @@ export interface SessionData {
   plan_mode_enabled?: boolean;
   active_plan_file?: string;
   plan_approval_pending?: boolean;
+
+  // New fields for session listing UI
+  last_activity?: string;         // ISO timestamp of last activity
+  last_message_preview?: string;  // First 50 chars of last message
+  project_name?: string;           // Extracted from working_dir
 }
 
 // Token usage from Claude

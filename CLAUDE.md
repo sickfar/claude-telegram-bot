@@ -25,7 +25,7 @@ Telegram message → Handler → Auth check → Rate limit → Claude session �
 
 - **`src/index.ts`** - Entry point, registers handlers, starts polling
 - **`src/config.ts`** - Environment parsing, MCP loading, safety prompts
-- **`src/session.ts`** - `ClaudeSession` class wrapping Agent SDK V2 with streaming, session persistence (`/tmp/claude-telegram-session.json`), and defense-in-depth safety checks
+- **`src/session.ts`** - `ClaudeSession` class wrapping Agent SDK V2 with streaming, session persistence (`~/.sickfar/sessions/`), and defense-in-depth safety checks
 - **`src/security.ts`** - `RateLimiter` (token bucket), path validation, command safety checks
 - **`src/formatting.ts`** - Markdown→HTML conversion for Telegram, tool status emoji formatting
 - **`src/utils.ts`** - Audit logging, voice transcription (OpenAI), typing indicators
@@ -78,13 +78,14 @@ Use `/plan <message>` to send a message to Claude in plan mode:
 - Cannot write or edit files - focuses on exploration and planning
 - Creates an implementation plan that can be approved via Telegram UI
 - Use `/code` to exit plan mode and proceed with implementation
-- Plan state is stored in `/tmp/plan-state-<session-id>.json` and `/tmp/plan-state-pending.json`
+- Plan state is stored in-memory only (no file persistence)
 
 ### Runtime Files
 
-- `/tmp/claude-telegram-session.json` - Session persistence for `/resume`
-- `/tmp/telegram-bot/` - Downloaded photos/documents
-- `/tmp/claude-telegram-audit.log` - Audit log
+- `~/.sickfar/sessions/` - Session persistence for `/resume`
+- `~/.sickfar/logs/audit.log` - Audit log with automatic rotation (10MB max, keeps 5 files)
+- `~/.sickfar/plans/` - Plan mode markdown files
+- `/tmp/telegram-bot/` - Downloaded photos/documents (temporary)
 
 ## Patterns
 

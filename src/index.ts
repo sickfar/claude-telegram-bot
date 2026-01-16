@@ -104,6 +104,10 @@ console.log("Starting bot...");
 const botInfo = await bot.api.getMe();
 console.log(`Bot started: @${botInfo.username}`);
 
+// Initialize storage (ensure directories, migrate old audit logs, cleanup temp files)
+const { runMigrations } = await import("./migrations");
+await runMigrations();
+
 // Check for pending restart message to update
 if (existsSync(RESTART_FILE)) {
   try {

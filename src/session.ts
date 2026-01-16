@@ -16,7 +16,6 @@ import {
   getAllowedPaths,
   MCP_SERVERS,
   getSafetyPrompt,
-  SESSION_FILE,
   STREAMING_THROTTLE_MS,
   TEMP_PATHS,
   THINKING_DEEP_KEYWORDS,
@@ -105,8 +104,8 @@ class ClaudeSession {
   lastUsage: TokenUsage | null = null;
   lastMessage: string | null = null;
 
-  // Plan mode state manager
-  planStateManager: PlanStateManager = new PlanStateManager();
+  // Plan mode state manager (in-memory only, no file persistence)
+  planStateManager: PlanStateManager = new PlanStateManager(null, false);
 
   private abortController: AbortController | null = null;
   private isQueryRunning = false;
@@ -221,26 +220,8 @@ class ClaudeSession {
       this.pendingPlanInjection = null;
     }
 
-    // Inject current date/time at session start so Claude doesn't need to call a tool for it
-    if (isNewSession) {
-      const now = new Date();
-      const datePrefix = `[Current date/time: ${now.toLocaleDateString(
-        "en-US",
-        {
-          weekday: "long",
-          year: "numeric",
-          month: "long",
-          day: "numeric",
-          hour: "2-digit",
-          minute: "2-digit",
-          timeZoneName: "short",
-        }
-      )}]\n\n`;
-      messageToSend = datePrefix + messageToSend;
-    }
-
-    // Initialize plan state manager with current session ID
-    this.planStateManager = new PlanStateManager(this.sessionId);
+    // Initialize plan state manager with current session ID (in-memory only)
+    this.planStateManager = new PlanStateManager(this.sessionId, false);
 
     // Build system prompt with plan mode if active
     const planModePrompt = await getPlanModePrompt(this.planStateManager);
@@ -660,8 +641,8 @@ class ClaudeSession {
   async kill(): Promise<void> {
     this.sessionId = null;
     this.lastActivity = null;
-    // Reset plan state manager
-    this.planStateManager = new PlanStateManager();
+    // Reset plan state manager (in-memory only)
+    this.planStateManager = new PlanStateManager(null, false);
     console.log("Session cleared");
   }
 
@@ -733,11 +714,22 @@ class ClaudeSession {
     if (!this.sessionId) return;
 
     try {
+      const workingDir = getWorkingDir();
       const data: SessionData = {
         session_id: this.sessionId,
         saved_at: new Date().toISOString(),
-        working_dir: getWorkingDir(),
+        working_dir: workingDir,
       };
+
+      // Add new metadata for session listing
+      data.last_activity = this.lastActivity?.toISOString() || data.saved_at;
+      if (this.lastMessage) {
+        data.last_message_preview = this.lastMessage.slice(0, 50);
+      }
+
+      // Extract project name from working directory
+      const { getProjectName } = await import("./session-storage");
+      data.project_name = getProjectName(workingDir);
 
       // Get plan mode state from manager
       const planState = this.planStateManager.getState();
@@ -751,34 +743,126 @@ class ClaudeSession {
         data.plan_approval_pending = true;
       }
 
-      await Bun.write(SESSION_FILE, JSON.stringify(data));
-      console.log(`Session saved to ${SESSION_FILE}`);
+      // Use new directory-based storage
+      const { saveSessionToDirectory } = await import("./session-storage");
+      await saveSessionToDirectory(data);
     } catch (error) {
       console.warn(`Failed to save session: ${error}`);
     }
   }
 
   /**
-   * Resume the last persisted session.
+   * Read last N messages from session .jsonl file.
+   * Returns array of {role: 'user'|'assistant', content: string}
    */
-  async resumeLast(): Promise<[success: boolean, message: string]> {
+  private readLastMessages(jsonlPath: string, count: number): Array<{role: string, content: string}> {
     try {
-      const file = Bun.file(SESSION_FILE);
-      if (!file.size) {
-        return [false, "No saved session found"];
+      const { readFileSync } = require("fs");
+      const content = readFileSync(jsonlPath, "utf-8");
+      const lines = content.trim().split("\n").filter((l: string) => l.trim());
+
+      const messages: Array<{role: string, content: string}> = [];
+
+      // Parse JSONL lines in reverse to get last messages
+      for (let i = lines.length - 1; i >= 0 && messages.length < count * 2; i--) {
+        try {
+          const line = JSON.parse(lines[i]!);
+
+          if (line.type === "user") {
+            messages.unshift({role: "user", content: line.message});
+          } else if (line.type === "assistant") {
+            // Extract text from assistant message
+            const textBlocks = line.message?.content?.filter((b: any) => b.type === "text") || [];
+            const text = textBlocks.map((b: any) => b.text).join("\n");
+            if (text) {
+              messages.unshift({role: "assistant", content: text});
+            }
+          }
+        } catch (e) {
+          // Skip invalid lines
+        }
       }
 
-      const text = readFileSync(SESSION_FILE, "utf-8");
-      const data: SessionData = JSON.parse(text);
+      // Return last 'count' exchanges (user + assistant pairs)
+      return messages.slice(-count * 2);
+    } catch (error) {
+      console.warn(`Failed to read session messages: ${error}`);
+      return [];
+    }
+  }
+
+  /**
+   * Resume a specific session by ID.
+   * @param sessionId - Full session ID to resume
+   * @returns [success, message, lastMessages?]
+   */
+  async resumeById(sessionId: string): Promise<[success: boolean, message: string, lastMessages?: Array<{role: string, content: string}>]> {
+    try {
+      const { getSessionMetaFilePath, getClaudeProjectDir } = await import("./session-storage");
+      const { readFileSync, existsSync } = await import("fs");
+      const { join } = await import("path");
+
+      // Check if the session .jsonl file exists (SDK session file)
+      const projectDir = getClaudeProjectDir();
+      const jsonlPath = join(projectDir, `${sessionId}.jsonl`);
+
+      if (!existsSync(jsonlPath)) {
+        return [false, "Session file not found"];
+      }
+
+      // Try to load metadata if it exists
+      const metaPath = getSessionMetaFilePath(sessionId);
+      let data: SessionData;
+
+      if (existsSync(metaPath)) {
+        const text = readFileSync(metaPath, "utf-8");
+        data = JSON.parse(text);
+      } else {
+        // SDK session without metadata - read from sessions-index.json
+        const indexPath = join(projectDir, "sessions-index.json");
+
+        if (existsSync(indexPath)) {
+          const indexText = readFileSync(indexPath, "utf-8");
+          const index = JSON.parse(indexText) as { entries: Array<{ sessionId: string; projectPath: string; created: string; modified: string; firstPrompt: string }> };
+          const entry = index.entries.find(e => e.sessionId === sessionId);
+
+          if (entry) {
+            const { getProjectName } = await import("./session-storage");
+            data = {
+              session_id: sessionId,
+              saved_at: entry.created,
+              working_dir: entry.projectPath,
+              last_activity: entry.modified,
+              project_name: getProjectName(entry.projectPath),
+              last_message_preview: entry.firstPrompt.slice(0, 50),
+            };
+          } else {
+            return [false, "Session not found in index"];
+          }
+        } else {
+          // Fallback to file stats if no index (shouldn't happen)
+          const { statSync } = await import("fs");
+          const stat = statSync(jsonlPath);
+          const { getProjectName } = await import("./session-storage");
+
+          data = {
+            session_id: sessionId,
+            saved_at: stat.mtime.toISOString(),
+            working_dir: getWorkingDir(),
+            last_activity: stat.mtime.toISOString(),
+            project_name: getProjectName(getWorkingDir()),
+          };
+        }
+      }
 
       if (!data.session_id) {
-        return [false, "Saved session file is empty"];
+        return [false, "Invalid session data"];
       }
 
       if (data.working_dir && data.working_dir !== getWorkingDir()) {
         return [
           false,
-          `Session was for different directory: ${data.working_dir}`,
+          `Session working directory mismatch.\nSession: ${data.working_dir}\nCurrent: ${getWorkingDir()}\n\nUse /project to switch directories first.`,
         ];
       }
 
@@ -815,11 +899,18 @@ class ClaudeSession {
         }
       }
 
+      const projectName = data.project_name || "Unknown";
+      const relativeTime = data.last_activity
+        ? (await import("./session-storage")).formatRelativeTime(data.last_activity)
+        : "unknown";
+
+      // Read last 3 messages from session
+      const lastMessages = this.readLastMessages(jsonlPath, 3);
+
       return [
         true,
-        `Resumed session \`${data.session_id.slice(0, 8)}...\` (saved at ${
-          data.saved_at
-        })`,
+        `Resumed session: ${projectName} (${relativeTime})`,
+        lastMessages,
       ];
     } catch (error) {
       console.error(`Failed to resume session: ${error}`);
