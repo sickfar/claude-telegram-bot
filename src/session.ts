@@ -22,9 +22,19 @@ import {
   THINKING_DEEP_KEYWORDS,
   THINKING_KEYWORDS,
   WORKING_DIR,
+  getPermissionMode,
 } from "./config";
 import { formatToolStatus } from "./formatting";
-import { checkPendingAskUserRequests } from "./handlers/streaming";
+import {
+  checkPendingAskUserRequests,
+  checkPendingPermissionRequests,
+  formatPermissionRequest,
+} from "./handlers/streaming";
+import {
+  createPermissionRequest,
+  pollPermissionRequest,
+  cleanupPermissionRequest,
+} from "./permissions";
 import { checkCommandSafety, isPathAllowed } from "./security";
 import type { SessionData, StatusCallback, TokenUsage } from "./types";
 
@@ -201,13 +211,63 @@ class ClaudeSession {
       model: "claude-sonnet-4-5",
       cwd: WORKING_DIR,
       settingSources: ["user", "project"],
-      permissionMode: "bypassPermissions",
-      allowDangerouslySkipPermissions: true,
+      permissionMode:
+        getPermissionMode() === "interactive" ? "default" : "bypassPermissions",
+      allowDangerouslySkipPermissions: getPermissionMode() !== "interactive",
       systemPrompt: SAFETY_PROMPT,
       mcpServers: MCP_SERVERS,
       maxThinkingTokens: thinkingTokens,
       additionalDirectories: ALLOWED_PATHS,
       resume: this.sessionId || undefined,
+
+      // Permission callback for interactive mode
+      canUseTool: async (
+        toolName: string,
+        toolInput: Record<string, unknown>
+      ) => {
+        // If bypass mode, allow everything
+        if (getPermissionMode() !== "interactive") {
+          return { behavior: "allow", updatedInput: toolInput };
+        }
+
+        // Serialize tool input for processing
+        const toolInputStr = JSON.stringify(toolInput);
+
+        // Check catastrophic commands (keep defense-in-depth)
+        if (toolName === "Bash") {
+          // Extract command from Bash tool input
+          const command =
+            typeof toolInput.command === "string"
+              ? toolInput.command
+              : toolInputStr;
+          const [isSafe, reason] = checkCommandSafety(command);
+          if (!isSafe) {
+            return { behavior: "deny", message: `Blocked: ${reason}` };
+          }
+        }
+
+        // Format the permission request for display
+        const formattedRequest = formatPermissionRequest(
+          toolName,
+          toolInputStr
+        );
+
+        // Create permission request file
+        const requestId = createPermissionRequest(
+          chatId!,
+          toolName,
+          toolInputStr,
+          formattedRequest
+        );
+
+        // Poll for user response (55 second timeout)
+        const result = await pollPermissionRequest(requestId, 55000);
+
+        // Clean up request file
+        cleanupPermissionRequest(requestId);
+
+        return result;
+      },
     };
 
     // Add Claude Code executable path if set (required for standalone builds)
@@ -365,6 +425,11 @@ class ClaudeSession {
                     await new Promise((resolve) => setTimeout(resolve, 100));
                   }
                 }
+              }
+
+              // Check for pending permission requests (interactive mode)
+              if (ctx && chatId && getPermissionMode() === "interactive") {
+                await checkPendingPermissionRequests(ctx, chatId);
               }
             }
 

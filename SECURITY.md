@@ -2,9 +2,17 @@
 
 This document describes the security architecture of the Claude Telegram Bot.
 
-## Permission Mode: Full Bypass
+## Permission Mode: Configurable
 
-**This bot runs Claude Code with all permission prompts disabled.**
+The bot supports two permission modes:
+
+### Bypass Mode (Default)
+
+**Recommended for mobile use.** Claude Code runs with all permission prompts disabled.
+
+```bash
+PERMISSION_MODE=bypass
+```
 
 ```typescript
 // src/session.ts
@@ -19,7 +27,34 @@ This means Claude can:
 
 This is intentional. The bot is designed for personal use from mobile, where confirming every file read or command would be impractical. Instead of per-action prompts, we rely on defense-in-depth with multiple security layers described below.
 
-**This is not configurable** - the bot always runs in bypass mode. If you need permission prompts, use Claude Code directly instead.
+### Interactive Mode (Optional)
+
+**Use when you want fine-grained control.** Claude asks for permission before each action.
+
+```bash
+PERMISSION_MODE=interactive
+```
+
+In this mode, Claude will send Telegram inline keyboard buttons for each file/command operation. See "Permission Dialogs" section below for details.
+
+### Switching Modes Dynamically
+
+You can change permission mode without restarting:
+
+```bash
+# Enable dynamic mode switching (default: true)
+ALLOW_TELEGRAM_PERMISSIONS_MODE=true
+```
+
+Then use the `/permissions` command in Telegram:
+
+```
+/permissions                # Show current mode
+/permissions bypass         # Switch to bypass mode
+/permissions interactive    # Switch to interactive mode
+```
+
+Set `ALLOW_TELEGRAM_PERMISSIONS_MODE=false` to lock the mode to the `PERMISSION_MODE` env var.
 
 ## Threat Model
 
@@ -84,7 +119,7 @@ Customize via `ALLOWED_PATHS` (comma-separated).
 
 ### Layer 4: Command Safety
 
-Dangerous shell commands are blocked as defense-in-depth.
+Dangerous shell commands are blocked as defense-in-depth, **regardless of permission mode**. Even in interactive mode, catastrophic commands are automatically denied without showing a permission dialog.
 
 #### Completely Blocked Patterns
 
@@ -113,6 +148,43 @@ rm -r /tmp/mydir         # Allowed - /tmp is always permitted
 ```
 
 Each path argument is checked against `ALLOWED_PATHS` before execution.
+
+### Layer 4.5: Permission Dialogs (Interactive Mode Only)
+
+When `PERMISSION_MODE=interactive`, Claude requests permission for each action via Telegram inline keyboards.
+
+**Flow:**
+
+1. Claude attempts to use a tool (Read, Write, Bash, etc.)
+2. Bot creates permission request file in `/tmp/perm-{uuid}.json`
+3. Telegram message sent with inline keyboard: **Allow** / **Deny** / **Deny with reason**
+4. User clicks button within 55 seconds (auto-denies on timeout)
+5. Result returned to Claude, who continues or adjusts approach
+
+**Three response options:**
+
+- ✅ **Allow**: Execute the action immediately
+- ❌ **Deny**: Block the action with generic message
+- 💬 **Deny with reason**: Block + provide feedback to Claude about why
+
+**Security notes:**
+
+- Timeout defaults to deny (safe default)
+- Permission requests are scoped to the chat ID
+- Catastrophic commands (Layer 4) are still blocked automatically
+- Old permission files are cleaned up after response
+
+**When to use interactive mode:**
+
+- Sensitive directories or commands
+- Learning what Claude is doing step-by-step
+- Cases where you want fine-grained control
+
+**When NOT to use interactive mode:**
+
+- Mobile use (too many prompts)
+- Trusted automation workflows
+- When you want Claude to work autonomously
 
 ### Layer 5: System Prompt
 

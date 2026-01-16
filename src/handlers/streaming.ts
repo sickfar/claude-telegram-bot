@@ -38,6 +38,93 @@ export function createAskUserKeyboard(
 }
 
 /**
+ * Create inline keyboard for permission request.
+ */
+export function createPermissionKeyboard(requestId: string): InlineKeyboard {
+  const keyboard = new InlineKeyboard();
+  keyboard.text("✅ Allow", `perm:${requestId}:allow`).row();
+  keyboard.text("❌ Deny", `perm:${requestId}:deny`).row();
+  keyboard.text("💬 Deny with reason", `perm:${requestId}:comment`).row();
+  return keyboard;
+}
+
+/**
+ * Format permission request for display.
+ */
+export function formatPermissionRequest(
+  toolName: string,
+  toolInput: string
+): string {
+  // Parse tool name (remove mcp__ prefix if present)
+  const cleanName = toolName.replace(/^mcp__[^_]+__/, "");
+
+  // Parse the JSON input
+  let input: any;
+  try {
+    input = JSON.parse(toolInput);
+  } catch {
+    // If not valid JSON, use as-is
+    return `🛠 <b>Use tool:</b> ${cleanName}\n<code>${escapeHtml(toolInput.slice(0, 200))}</code>`;
+  }
+
+  // Format based on tool type
+  if (toolName === "Bash") {
+    const command = input.command || toolInput;
+    return `🔧 <b>Execute command:</b>\n<code>${escapeHtml(command)}</code>`;
+  } else if (toolName === "Read") {
+    const filePath = input.file_path || toolInput;
+    return `📖 <b>Read file:</b>\n<code>${escapeHtml(filePath)}</code>`;
+  } else if (toolName === "Write" || toolName === "Edit") {
+    const filePath = input.file_path || toolInput;
+    return `✏️ <b>Modify file:</b>\n<code>${escapeHtml(filePath)}</code>`;
+  } else {
+    // For other tools, show the tool name and truncated input
+    return `🛠 <b>Use tool:</b> ${cleanName}\n<code>${escapeHtml(toolInput.slice(0, 200))}</code>`;
+  }
+}
+
+/**
+ * Check for pending permission requests and send inline keyboards.
+ */
+export async function checkPendingPermissionRequests(
+  ctx: Context,
+  chatId: number
+): Promise<boolean> {
+  const glob = new Bun.Glob("perm-*.json");
+  let buttonsSent = false;
+
+  for await (const filename of glob.scan({ cwd: "/tmp", absolute: false })) {
+    const filepath = `/tmp/${filename}`;
+    try {
+      const file = Bun.file(filepath);
+      const text = await file.text();
+      const data = JSON.parse(text);
+
+      // Only process pending requests for this chat
+      if (data.status !== "pending") continue;
+      if (String(data.chat_id) !== String(chatId)) continue;
+
+      const formatted = data.formatted_request || "Permission request";
+      const keyboard = createPermissionKeyboard(data.request_id);
+
+      await ctx.reply(`🔐 <b>Permission Required</b>\n\n${formatted}`, {
+        reply_markup: keyboard,
+        parse_mode: "HTML",
+      });
+      buttonsSent = true;
+
+      // Mark as sent
+      data.status = "sent";
+      await Bun.write(filepath, JSON.stringify(data));
+    } catch (error) {
+      console.warn(`Failed to process permission file ${filepath}:`, error);
+    }
+  }
+
+  return buttonsSent;
+}
+
+/**
  * Check for pending ask-user requests and send inline keyboards.
  */
 export async function checkPendingAskUserRequests(

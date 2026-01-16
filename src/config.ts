@@ -233,6 +233,33 @@ if (ALLOWED_USERS.length === 0) {
   process.exit(1);
 }
 
+// ============== Permission Mode ==============
+
+export const PERMISSION_MODE_DEFAULT =
+  (process.env.PERMISSION_MODE as "bypass" | "interactive") || "bypass";
+export const ALLOW_TELEGRAM_PERMISSIONS_MODE =
+  (process.env.ALLOW_TELEGRAM_PERMISSIONS_MODE || "true").toLowerCase() ===
+  "true";
+
+// Runtime permission mode (can be changed via Telegram command if allowed)
+let currentPermissionMode: "bypass" | "interactive" = PERMISSION_MODE_DEFAULT;
+
+export function getPermissionMode(): "bypass" | "interactive" {
+  return currentPermissionMode;
+}
+
+export function setPermissionMode(mode: "bypass" | "interactive"): boolean {
+  if (!ALLOW_TELEGRAM_PERMISSIONS_MODE) {
+    return false; // Mode changes not allowed
+  }
+  currentPermissionMode = mode;
+  return true;
+}
+
+export function resetPermissionMode(): void {
+  currentPermissionMode = PERMISSION_MODE_DEFAULT;
+}
+
 console.log(
-  `Config loaded: ${ALLOWED_USERS.length} allowed users, working dir: ${WORKING_DIR}`
+  `Config loaded: ${ALLOWED_USERS.length} allowed users, working dir: ${WORKING_DIR}, permission mode: ${currentPermissionMode}`
 );

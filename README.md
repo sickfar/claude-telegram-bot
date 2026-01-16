@@ -86,6 +86,8 @@ resume - Resume last session
 stop - Interrupt current query
 status - Check what Claude is doing
 restart - Restart the bot
+retry - Retry the last message
+permissions - View or change permission mode
 ```
 
 ### 2. Configure Environment
@@ -116,6 +118,46 @@ To customize, set `ALLOWED_PATHS` in `.env` (comma-separated). Note: this **over
 ALLOWED_PATHS=/your/project,/other/path,~/.claude
 ```
 
+#### Permission Mode
+
+Control whether Claude asks for permission before actions:
+
+```bash
+# Default permission mode: "bypass" (no prompts) or "interactive" (show dialogs)
+PERMISSION_MODE=bypass
+
+# Allow changing mode via /permissions command (default: true)
+ALLOW_TELEGRAM_PERMISSIONS_MODE=true
+```
+
+**Two modes:**
+- **Bypass mode** (default): No prompts, Claude acts autonomously
+- **Interactive mode**: Show dialog for each file/command operation
+
+**Interactive mode** shows Telegram buttons with three options:
+- ✅ **Allow** - Execute the action
+- ❌ **Deny** - Block the action
+- 💬 **Deny with reason** - Block and explain why (Claude sees your feedback)
+
+**Dynamic mode switching:**
+
+If `ALLOW_TELEGRAM_PERMISSIONS_MODE=true`, you can change modes without restarting:
+
+```
+/permissions                # Show current mode
+/permissions bypass         # Switch to bypass mode
+/permissions interactive    # Switch to interactive mode
+```
+
+Mode changes are effective immediately and persist until bot restart.
+
+If `ALLOW_TELEGRAM_PERMISSIONS_MODE=false`, mode is locked to `PERMISSION_MODE` env var and the command is disabled.
+
+**Bypass mode** (default) is recommended for mobile use. Interactive mode is useful for:
+- Sensitive directories or commands
+- Learning what Claude is doing step-by-step
+- Cases where you want fine-grained control
+
 ### 3. Configure MCP Servers (Optional)
 
 Copy and edit the MCP config:
@@ -129,14 +171,16 @@ The bot includes a built-in `ask_user` MCP server that lets Claude present optio
 
 ## Bot Commands
 
-| Command    | Description                       |
-| ---------- | --------------------------------- |
-| `/start`   | Show status and your user ID      |
-| `/new`     | Start a fresh session             |
-| `/resume`  | Resume last session after restart |
-| `/stop`    | Interrupt current query           |
-| `/status`  | Check what Claude is doing        |
-| `/restart` | Restart the bot                   |
+| Command        | Description                            |
+| -------------- | -------------------------------------- |
+| `/start`       | Show status and your user ID           |
+| `/new`         | Start a fresh session                  |
+| `/resume`      | Resume last session after restart      |
+| `/stop`        | Interrupt current query                |
+| `/status`      | Check what Claude is doing             |
+| `/restart`     | Restart the bot                        |
+| `/retry`       | Retry the last message                 |
+| `/permissions` | View or change permission mode         |
 
 ## Running as a Service (macOS)
 

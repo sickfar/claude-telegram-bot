@@ -33,13 +33,22 @@ export async function handleText(ctx: Context): Promise<void> {
     return;
   }
 
-  // 2. Check for interrupt prefix
+  // 2. Check if this is a reply to a permission comment request
+  if (ctx.message?.reply_to_message) {
+    const replyText = ctx.message.reply_to_message.text || "";
+    if (replyText.includes("Please provide a reason for denial:")) {
+      await handlePermissionComment(ctx, chatId, message);
+      return;
+    }
+  }
+
+  // 3. Check for interrupt prefix
   message = await checkInterrupt(message);
   if (!message.trim()) {
     return;
   }
 
-  // 3. Rate limit check
+  // 4. Rate limit check
   const [allowed, retryAfter] = rateLimiter.check(userId);
   if (!allowed) {
     await auditLogRateLimit(userId, username, retryAfter!);
@@ -49,20 +58,20 @@ export async function handleText(ctx: Context): Promise<void> {
     return;
   }
 
-  // 4. Store message for retry
+  // 5. Store message for retry
   session.lastMessage = message;
 
-  // 5. Mark processing started
+  // 6. Mark processing started
   const stopProcessing = session.startProcessing();
 
-  // 6. Start typing indicator
+  // 7. Start typing indicator
   const typing = startTypingIndicator(ctx);
 
-  // 7. Create streaming state and callback
+  // 8. Create streaming state and callback
   let state = new StreamingState();
   let statusCallback = createStatusCallback(ctx, state);
 
-  // 8. Send to Claude with retry logic for crashes
+  // 9. Send to Claude with retry logic for crashes
   const MAX_RETRIES = 1;
 
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
@@ -76,7 +85,7 @@ export async function handleText(ctx: Context): Promise<void> {
         ctx
       );
 
-      // 9. Audit log
+      // 10. Audit log
       await auditLog(userId, username, "TEXT", message, response);
       break; // Success - exit retry loop
     } catch (error) {
@@ -122,7 +131,46 @@ export async function handleText(ctx: Context): Promise<void> {
     }
   }
 
-  // 10. Cleanup
+  // 11. Cleanup
   stopProcessing();
   typing.stop();
+}
+
+/**
+ * Handle permission comment reply.
+ */
+async function handlePermissionComment(
+  ctx: Context,
+  chatId: number,
+  comment: string
+): Promise<void> {
+  // Find the awaiting_comment request for this chat
+  const glob = new Bun.Glob("perm-*.json");
+
+  for await (const filename of glob.scan({ cwd: "/tmp", absolute: false })) {
+    const filepath = `/tmp/${filename}`;
+    try {
+      const file = Bun.file(filepath);
+      const text = await file.text();
+      const data = JSON.parse(text);
+
+      if (
+        data.status === "awaiting_comment" &&
+        String(data.chat_id) === String(chatId)
+      ) {
+        // Update request with denial + comment
+        data.status = "denied";
+        data.response = comment;
+        data.updated_at = new Date().toISOString();
+        await Bun.write(filepath, JSON.stringify(data));
+
+        await ctx.reply("❌ Permission denied with your reason.");
+        return;
+      }
+    } catch (error) {
+      console.warn(`Failed to process permission file ${filepath}:`, error);
+    }
+  }
+
+  await ctx.reply("⚠️ No pending permission request found.");
 }

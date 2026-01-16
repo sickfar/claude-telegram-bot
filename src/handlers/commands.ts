@@ -6,8 +6,16 @@
 
 import type { Context } from "grammy";
 import { session } from "../session";
-import { WORKING_DIR, ALLOWED_USERS, RESTART_FILE } from "../config";
+import {
+  WORKING_DIR,
+  ALLOWED_USERS,
+  RESTART_FILE,
+  getPermissionMode,
+  setPermissionMode,
+  ALLOW_TELEGRAM_PERMISSIONS_MODE,
+} from "../config";
 import { isAuthorized } from "../security";
+import { auditLog } from "../utils";
 
 /**
  * /start - Show welcome message and status.
@@ -24,16 +32,20 @@ export async function handleStart(ctx: Context): Promise<void> {
   const status = session.isActive ? "Active session" : "No active session";
   const workDir = WORKING_DIR;
 
+  const permMode = getPermissionMode();
+
   await ctx.reply(
     `🤖 <b>Claude Telegram Bot</b>\n\n` +
       `Status: ${status}\n` +
-      `Working directory: <code>${workDir}</code>\n\n` +
+      `Working directory: <code>${workDir}</code>\n` +
+      `Permission mode: ${permMode}\n\n` +
       `<b>Commands:</b>\n` +
       `/new - Start fresh session\n` +
       `/stop - Stop current query\n` +
       `/status - Show detailed status\n` +
       `/resume - Resume last session\n` +
       `/retry - Retry last message\n` +
+      `/permissions - View/change permission mode\n` +
       `/restart - Restart the bot\n\n` +
       `<b>Tips:</b>\n` +
       `• Prefix with <code>!</code> to interrupt current query\n` +
@@ -162,6 +174,11 @@ export async function handleStatus(ctx: Context): Promise<void> {
   // Working directory
   lines.push(`\n📁 Working dir: <code>${WORKING_DIR}</code>`);
 
+  // Permission mode
+  const permMode = getPermissionMode();
+  const permIcon = permMode === "bypass" ? "🔓" : "🔐";
+  lines.push(`${permIcon} Permission mode: ${permMode}`);
+
   await ctx.reply(lines.join("\n"), { parse_mode: "HTML" });
 }
 
@@ -266,4 +283,69 @@ export async function handleRetry(ctx: Context): Promise<void> {
   } as Context;
 
   await handleText(fakeCtx);
+}
+
+/**
+ * /permissions - View or change permission mode dynamically.
+ */
+export async function handlePermissionsCommand(
+  ctx: Context
+): Promise<void> {
+  const userId = ctx.from?.id;
+  const username = ctx.from?.username || "unknown";
+
+  if (!userId) {
+    await ctx.reply("Unable to identify user.");
+    return;
+  }
+
+  if (!isAuthorized(userId, ALLOWED_USERS)) {
+    auditLog(userId, username, "AUTH", "/permissions command rejected", "");
+    await ctx.reply("⛔️ Unauthorized");
+    return;
+  }
+
+  // Check if mode switching is allowed
+  if (!ALLOW_TELEGRAM_PERMISSIONS_MODE) {
+    await ctx.reply(
+      `⚠️ Permission mode changes via Telegram are disabled.\nMode is locked to: ${getPermissionMode()}`
+    );
+    return;
+  }
+
+  // Parse argument
+  const args = ctx.message?.text?.split(" ") || [];
+  const newMode = args[1]?.toLowerCase();
+
+  if (!newMode) {
+    // Show current mode
+    const current = getPermissionMode();
+    await ctx.reply(
+      `🔐 <b>Current permission mode:</b> ${current}\n\n` +
+        `Available modes:\n` +
+        `• <code>bypass</code> - No prompts (fast)\n` +
+        `• <code>interactive</code> - Show dialogs\n\n` +
+        `Change mode: <code>/permissions [mode]</code>`,
+      { parse_mode: "HTML" }
+    );
+    return;
+  }
+
+  if (newMode !== "bypass" && newMode !== "interactive") {
+    await ctx.reply(
+      "⚠️ Invalid mode. Use: /permissions bypass OR /permissions interactive"
+    );
+    return;
+  }
+
+  // Set new mode
+  const success = setPermissionMode(newMode);
+  if (success) {
+    auditLog(userId, username, "CONFIG", `Permission mode changed to: ${newMode}`, "");
+    await ctx.reply(`✅ Permission mode set to: <b>${newMode}</b>`, {
+      parse_mode: "HTML",
+    });
+  } else {
+    await ctx.reply("❌ Failed to change permission mode.");
+  }
 }

@@ -34,6 +34,12 @@ export async function handleCallback(ctx: Context): Promise<void> {
 
   // 2. Parse callback data: askuser:{request_id}:{option_index}
   if (!callbackData.startsWith("askuser:")) {
+    // Check for permission callback
+    if (callbackData.startsWith("perm:")) {
+      await handlePermissionCallback(ctx, callbackData, chatId);
+      return;
+    }
+
     await ctx.answerCallbackQuery();
     return;
   }
@@ -143,5 +149,92 @@ export async function handleCallback(ctx: Context): Promise<void> {
     }
   } finally {
     typing.stop();
+  }
+}
+
+/**
+ * Handle permission callback (Allow/Deny/Comment).
+ */
+async function handlePermissionCallback(
+  ctx: Context,
+  callbackData: string,
+  chatId: number
+): Promise<void> {
+  const parts = callbackData.split(":");
+  if (parts.length !== 3) {
+    await ctx.answerCallbackQuery({ text: "Invalid callback data" });
+    return;
+  }
+
+  const requestId = parts[1]!;
+  const action = parts[2]!; // "allow", "deny", or "comment"
+
+  const requestFile = `/tmp/perm-${requestId}.json`;
+  let requestData: {
+    formatted_request: string;
+    status: string;
+    updated_at: string;
+    response?: string;
+  };
+
+  try {
+    const file = Bun.file(requestFile);
+    const text = await file.text();
+    requestData = JSON.parse(text);
+  } catch (error) {
+    await ctx.answerCallbackQuery({ text: "Request expired" });
+    return;
+  }
+
+  if (action === "allow") {
+    // Update message to show approval
+    await ctx.editMessageText(
+      `✅ <b>Approved</b>\n\n${requestData.formatted_request}`,
+      {
+        parse_mode: "HTML",
+      }
+    );
+
+    // Update request file
+    requestData.status = "approved";
+    requestData.updated_at = new Date().toISOString();
+    await Bun.write(requestFile, JSON.stringify(requestData));
+
+    await ctx.answerCallbackQuery({ text: "✅ Approved" });
+  } else if (action === "deny") {
+    // Update message to show denial
+    await ctx.editMessageText(
+      `❌ <b>Denied</b>\n\n${requestData.formatted_request}`,
+      {
+        parse_mode: "HTML",
+      }
+    );
+
+    // Update request file
+    requestData.status = "denied";
+    requestData.response = "Denied by user";
+    requestData.updated_at = new Date().toISOString();
+    await Bun.write(requestFile, JSON.stringify(requestData));
+
+    await ctx.answerCallbackQuery({ text: "❌ Denied" });
+  } else if (action === "comment") {
+    // Update message to show awaiting comment
+    await ctx.editMessageText(
+      `💬 <b>Please provide a reason for denial:</b>\n\n${requestData.formatted_request}`,
+      {
+        parse_mode: "HTML",
+      }
+    );
+
+    // Set a flag in the request file to indicate waiting for comment
+    requestData.status = "awaiting_comment";
+    requestData.updated_at = new Date().toISOString();
+    await Bun.write(requestFile, JSON.stringify(requestData));
+
+    await ctx.reply("Type your reason:", {
+      reply_markup: { force_reply: true, selective: true },
+    });
+
+    await ctx.answerCallbackQuery({ text: "💬 Waiting for comment" });
   }
 }
