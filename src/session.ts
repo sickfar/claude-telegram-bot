@@ -33,14 +33,15 @@ import type { PlanApprovalAction } from "./plan-mode";
 import { formatToolStatus } from "./formatting";
 import {
   checkPendingAskUserRequests,
-  checkPendingPermissionRequests,
+  displayPermissionRequest,
   formatPermissionRequest,
 } from "./handlers/streaming";
 import {
   createPermissionRequest,
-  pollPermissionRequest,
-  cleanupPermissionRequest,
+  waitForPermission,
 } from "./permissions";
+import { permissionStore } from "./permission-store";
+import { askUserStore } from "./ask-user-store";
 import { checkCommandSafety, isPathAllowed } from "./security";
 import type { SessionData, StatusCallback, TokenUsage } from "./types";
 
@@ -104,8 +105,8 @@ class ClaudeSession {
   lastUsage: TokenUsage | null = null;
   lastMessage: string | null = null;
 
-  // Plan mode state manager (in-memory only, no file persistence)
-  planStateManager: PlanStateManager = new PlanStateManager(null, false);
+  // Plan mode state manager (with file persistence for state across messages/restarts)
+  planStateManager: PlanStateManager = new PlanStateManager(null, true);
 
   private abortController: AbortController | null = null;
   private isQueryRunning = false;
@@ -220,8 +221,11 @@ class ClaudeSession {
       this.pendingPlanInjection = null;
     }
 
-    // Initialize plan state manager with current session ID (in-memory only)
-    this.planStateManager = new PlanStateManager(this.sessionId, false);
+    // Update plan state manager session ID if needed (preserve state across messages)
+    // Only create new manager for fresh sessions, otherwise keep existing state
+    if (isNewSession) {
+      this.planStateManager = new PlanStateManager(this.sessionId, true);
+    }
 
     // Build system prompt with plan mode if active
     const planModePrompt = await getPlanModePrompt(this.planStateManager);
@@ -239,7 +243,8 @@ class ClaudeSession {
       model: getModel(),
       cwd: getWorkingDir(),
       settingSources: ["user", "project"],
-      permissionMode: shouldBypassPermissions ? "bypassPermissions" : "default",
+      // Only set permissionMode when bypassing - omit otherwise to allow canUseTool callback
+      ...(shouldBypassPermissions && { permissionMode: "bypassPermissions" }),
       allowDangerouslySkipPermissions: shouldBypassPermissions,
       systemPrompt: systemPrompt,
       mcpServers: MCP_SERVERS,
@@ -252,8 +257,17 @@ class ClaudeSession {
         toolName: string,
         toolInput: Record<string, unknown>
       ) => {
+        console.log(`[PERMISSION DEBUG] canUseTool invoked for: ${toolName}`);
+
         // If bypass mode or in plan mode, allow everything
         if (shouldBypassPermissions) {
+          console.log(`[PERMISSION DEBUG] Bypassing permissions`);
+          return { behavior: "allow", updatedInput: toolInput };
+        }
+
+        // Always allow our internal MCP tools (ask-user, plan-mode) without permission prompts
+        if (toolName.startsWith("mcp__ask-user__") || toolName.startsWith("mcp__plan-mode__")) {
+          console.log(`[PERMISSION DEBUG] Auto-allowing internal MCP tool: ${toolName}`);
           return { behavior: "allow", updatedInput: toolInput };
         }
 
@@ -279,7 +293,8 @@ class ClaudeSession {
           toolInputStr
         );
 
-        // Create permission request file
+        console.log(`[PERMISSION DEBUG] Creating permission request...`);
+        // Create permission request
         const requestId = createPermissionRequest(
           chatId!,
           toolName,
@@ -287,11 +302,18 @@ class ClaudeSession {
           formattedRequest
         );
 
-        // Poll for user response (55 second timeout)
-        const result = await pollPermissionRequest(requestId, 55000);
+        // Display UI immediately - no waiting, no race condition
+        if (ctx) {
+          console.log(`[PERMISSION DEBUG] Displaying UI for ${requestId}...`);
+          await displayPermissionRequest(ctx, requestId, formattedRequest);
+        } else {
+          console.warn(`[PERMISSION DEBUG] No ctx available, cannot display permission UI`);
+        }
 
-        // Clean up request file
-        cleanupPermissionRequest(requestId);
+        console.log(`[PERMISSION DEBUG] Awaiting Promise for ${requestId}...`);
+        // Wait for user to click Allow/Deny (event-based, no timeout)
+        const result = await waitForPermission(requestId);
+        console.log(`[PERMISSION DEBUG] Promise resolved with result:`, result.behavior);
 
         return result;
       },
@@ -318,6 +340,9 @@ class ClaudeSession {
     } else {
       console.log(`STARTING new Claude session (thinking=${thinkingLabel})`);
       this.sessionId = null;
+      // Clear any pending requests from previous session
+      permissionStore.clearAll();
+      askUserStore.clearAll();
     }
 
     // Check if stop was requested during processing phase
@@ -394,7 +419,6 @@ class ClaudeSession {
               // Check for ExitPlanMode - set flag to prevent subsequent modifications
               if (isExitPlanModeTool(toolName)) {
                 planApprovalRequested = true;
-                await this.planStateManager.transition({ type: "REQUEST_APPROVAL", requestId: "" });
                 console.log(`[PLAN] ExitPlanMode detected (${toolName}) - blocking subsequent write operations`);
               }
 
@@ -461,85 +485,51 @@ class ClaudeSession {
               }
 
               // Check for pending ask_user requests after ask-user MCP tool
+              // In-process MCP server populates store instantly - no delays needed
               if (toolName.startsWith("mcp__ask-user") && ctx && chatId) {
-                // Small delay to let MCP server write the file
-                await new Promise((resolve) => setTimeout(resolve, 200));
-
-                // Retry a few times in case of timing issues
-                for (let attempt = 0; attempt < 3; attempt++) {
-                  const buttonsSent = await checkPendingAskUserRequests(
-                    ctx,
-                    chatId
-                  );
-                  if (buttonsSent) {
-                    askUserTriggered = true;
-                    break;
-                  }
-                  if (attempt < 2) {
-                    await new Promise((resolve) => setTimeout(resolve, 100));
-                  }
+                const buttonsSent = await checkPendingAskUserRequests(ctx, chatId);
+                if (buttonsSent) {
+                  askUserTriggered = true;
                 }
               }
 
-              // Check for plan approval after ExitPlanMode tool
+              // Handle plan approval for ExitPlanMode tool
+              // We handle this directly here since we have access to ctx for UI display
+              // The MCP handler just validates and returns - session.ts displays approval UI
               if (isExitPlanModeTool(toolName) && ctx && chatId && this.sessionId) {
-                console.log("[PLAN] ExitPlanMode tool completed, checking for plan approval");
+                console.log("[PLAN] ExitPlanMode detected, setting up approval flow");
 
-                // Retry a few times in case of timing issues (like ask_user does)
-                for (let attempt = 0; attempt < 5; attempt++) {
-                  if (attempt > 0) {
-                    console.log(`[PLAN] Retry attempt ${attempt}`);
+                const state = this.planStateManager.getState();
+                const planFile = state.active_plan_file;
+
+                if (planFile) {
+                  // Read plan content
+                  const planContent = await this.planStateManager.readPlanContent();
+
+                  if (planContent) {
+                    const requestId = crypto.randomUUID().slice(0, 8);
+                    console.log(`[PLAN] Displaying approval for ${planFile}`);
+
+                    // Set up approval state
+                    this.planStateManager.setPendingApproval(planFile, planContent, requestId);
+
+                    // Display approval dialog
+                    const { displayPlanApproval } = await import("./handlers/plan-approval");
+                    await displayPlanApproval(ctx, planFile, planContent, requestId);
+
+                    // Break out of event loop to wait for user
+                    askUserTriggered = true;
+                    console.log("[PLAN] Approval dialog displayed, breaking event loop");
+                  } else {
+                    console.error(`[PLAN] Could not read plan content from ${planFile}`);
                   }
-
-                  // Delay to let MCP server write state
-                  await new Promise((resolve) => setTimeout(resolve, attempt === 0 ? 200 : 300));
-
-                  try {
-                    // Reload state from file to get MCP server updates
-                    await this.planStateManager.load();
-                    const state = this.planStateManager.getState();
-                    console.log(`[PLAN] plan_approval_pending=${state.plan_approval_pending}, active_plan_file=${state.active_plan_file}`);
-
-                    if (state.plan_approval_pending && state.active_plan_file) {
-                      // Read plan content using manager
-                      const planContent = await this.planStateManager.readPlanContent();
-
-                      if (planContent) {
-                        const requestId = crypto.randomUUID().slice(0, 8);
-                        console.log(`[PLAN] Displaying approval for ${state.active_plan_file}`);
-
-                        // Store in manager
-                        this.planStateManager.setPendingApproval(state.active_plan_file, planContent, requestId);
-
-                        // Display approval dialog
-                        const { displayPlanApproval } = await import("./handlers/plan-approval");
-                        await displayPlanApproval(ctx, state.active_plan_file, planContent, requestId);
-
-                        // Break out of event loop to wait for user
-                        askUserTriggered = true;
-                        console.log("[PLAN] Approval dialog displayed, breaking event loop");
-                        break; // Success, stop retrying
-                      } else {
-                        const planPath = this.planStateManager.getPlanFilePath();
-                        console.warn(`[PLAN] Plan file not found: ${planPath}`);
-                      }
-                    } else {
-                      console.log(`[PLAN] Approval not pending yet (attempt ${attempt})`);
-                    }
-                  } catch (error) {
-                    console.error(`[PLAN] Error checking plan approval:`, error);
-                  }
-                }
-
-                if (!askUserTriggered) {
-                  console.error("[PLAN] Failed to display approval dialog after all retries");
+                } else {
+                  console.error("[PLAN] No active plan file for ExitPlanMode");
                 }
               }
 
-              // Check for pending permission requests (interactive mode)
-              if (ctx && chatId && getPermissionMode() === "interactive") {
-                await checkPendingPermissionRequests(ctx, chatId);
-              }
+              // Permission UI is now displayed directly from canUseTool callback
+              // No need to check for pending requests here
             }
 
             // Text content
@@ -639,10 +629,13 @@ class ClaudeSession {
    * Kill the current session (clear session_id).
    */
   async kill(): Promise<void> {
+    // Clean up plan state file before clearing
+    await this.planStateManager.cleanup();
+
     this.sessionId = null;
     this.lastActivity = null;
-    // Reset plan state manager (in-memory only)
-    this.planStateManager = new PlanStateManager(null, false);
+    // Reset plan state manager
+    this.planStateManager = new PlanStateManager(null, true);
     console.log("Session cleared");
   }
 
@@ -874,8 +867,8 @@ class ClaudeSession {
         })`
       );
 
-      // Initialize plan state manager with resumed session ID
-      this.planStateManager = new PlanStateManager(this.sessionId);
+      // Initialize plan state manager with resumed session ID (with file persistence)
+      this.planStateManager = new PlanStateManager(this.sessionId, true);
       await this.planStateManager.load();
 
       // Check for active plan and inject into context

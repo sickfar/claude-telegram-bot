@@ -19,12 +19,9 @@ export interface AskUserRequest {
  */
 class AskUserStore {
   private requests = new Map<string, AskUserRequest>();
-  private cleanupInterval: Timer | null = null;
-  private readonly CLEANUP_INTERVAL_MS = 60_000; // Check every minute
-  private readonly REQUEST_TTL_MS = 300_000; // 5 minutes
 
   constructor() {
-    this.startCleanup();
+    // No automatic cleanup - manual cleanup on new session
   }
 
   /**
@@ -91,43 +88,15 @@ class AskUserStore {
   }
 
   /**
-   * Start automatic cleanup of old requests.
+   * Clear all pending requests.
+   * Called when a new session starts.
    */
-  private startCleanup(): void {
-    this.cleanupInterval = setInterval(() => {
-      this.cleanup();
-    }, this.CLEANUP_INTERVAL_MS);
-  }
+  clearAll(): void {
+    const count = this.requests.size;
+    this.requests.clear();
 
-  /**
-   * Remove requests older than TTL.
-   */
-  private cleanup(): void {
-    const now = Date.now();
-    let removed = 0;
-
-    for (const [requestId, request] of this.requests.entries()) {
-      const createdAt = new Date(request.created_at).getTime();
-      const age = now - createdAt;
-
-      if (age > this.REQUEST_TTL_MS) {
-        this.requests.delete(requestId);
-        removed++;
-      }
-    }
-
-    if (removed > 0) {
-      console.log(`Cleaned up ${removed} expired ask-user requests`);
-    }
-  }
-
-  /**
-   * Stop cleanup interval (for testing).
-   */
-  stopCleanup(): void {
-    if (this.cleanupInterval) {
-      clearInterval(this.cleanupInterval);
-      this.cleanupInterval = null;
+    if (count > 0) {
+      console.log(`Cleared ${count} pending ask-user requests`);
     }
   }
 

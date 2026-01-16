@@ -14,10 +14,11 @@ import { escapeHtml } from "../formatting";
  */
 export function createPlanApprovalKeyboard(requestId: string): InlineKeyboard {
   const keyboard = new InlineKeyboard()
-    .text("✅ Accept Plan", `planapproval:${requestId}:accept`)
-    .text("❌ Reject Plan", `planapproval:${requestId}:reject`)
+    .text("✅ Proceed", `planapproval:${requestId}:accept`)
     .row()
-    .text("🗑️ Clear Context & Proceed", `planapproval:${requestId}:clear`);
+    .text("🔄 Clear Context & Proceed", `planapproval:${requestId}:clear`)
+    .row()
+    .text("❌ Reject with Commentary", `planapproval:${requestId}:reject`);
 
   return keyboard;
 }
@@ -146,9 +147,58 @@ export async function handlePlanApprovalCallback(
     await ctx.answerCallbackQuery({ text: "❌ Plan rejected" });
     // Session continues but plan is discarded
   } else if (action === "clear") {
-    // Kill the session
+    await ctx.answerCallbackQuery({ text: "🔄 Starting fresh session with plan" });
+
+    // Get plan content and old session ID before killing
+    const approval = session.getPendingPlanApproval();
+    const oldSessionId = session.sessionId;
+    const planContent = approval?.planContent || "";
+    const planFile = approval?.planFile || "plan.md";
+
+    // Get the old session log file path
+    const { getClaudeProjectDir } = await import("../session-storage");
+    const projectDir = getClaudeProjectDir();
+    const oldSessionLogFile = oldSessionId ? `${projectDir}/${oldSessionId}.jsonl` : null;
+
+    // Kill the session (clears context)
     await session.kill();
-    console.log("Session cleared after plan approval clear");
-    await ctx.answerCallbackQuery({ text: "🗑️ Context cleared" });
+    console.log("[PLAN-APPROVAL] Session cleared, starting new session with plan");
+
+    // Start new session with plan context
+    if (shouldContinue && ctx.chat && planContent) {
+      const { StreamingState, createStatusCallback } = await import("./streaming");
+      const { startTypingIndicator } = await import("../utils");
+      const state = new StreamingState();
+      const statusCallback = createStatusCallback(ctx, state);
+
+      // Start typing indicator
+      const typing = startTypingIndicator(ctx);
+
+      // Build the prompt with plan and reference to old session
+      let prompt = `# Implementation Plan\n\nFollow this implementation plan:\n\n---\n${planContent}\n---\n\n`;
+      prompt += `Proceed with implementing this plan step by step.\n\n`;
+
+      if (oldSessionLogFile) {
+        prompt += `If you need any details from the planning discussion, you can reference the previous conversation log at: ${oldSessionLogFile}`;
+      }
+
+      try {
+        console.log("[PLAN-APPROVAL] Starting new session with plan context");
+        await session.sendMessageStreaming(
+          prompt,
+          ctx.from?.username || "user",
+          ctx.from?.id || 0,
+          statusCallback,
+          ctx.chat.id,
+          ctx
+        );
+        console.log("[PLAN-APPROVAL] New session started with plan");
+      } catch (e) {
+        console.error("[PLAN-APPROVAL] Error starting new session:", e);
+        await ctx.reply("❌ Error starting new session. Please try again.");
+      } finally {
+        typing.stop();
+      }
+    }
   }
 }

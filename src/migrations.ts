@@ -4,10 +4,9 @@
  * Migrates bot storage from /tmp to ~/.sickfar/ for persistence.
  */
 
-import { existsSync, mkdirSync, readdirSync, copyFileSync, unlinkSync } from "fs";
+import { existsSync, mkdirSync } from "fs";
 import { copyFile } from "fs/promises";
 import { CONFIG_DIR, AUDIT_LOG_PATH } from "./config";
-import { dirname } from "path";
 
 /**
  * Run all migrations on bot startup.
@@ -20,8 +19,7 @@ export async function runMigrations(): Promise<void> {
     // Phase 2: Migrate audit log from /tmp
     await migrateAuditLog();
 
-    // Phase 3: Clean up old plan state files
-    cleanupOldPlanStateFiles();
+    // Note: /tmp cleanup removed - MCP servers are now in-process and don't use /tmp files
   } catch (error) {
     console.error("Storage initialization failed:", error);
     // Don't throw - allow bot to start even if migration fails
@@ -73,40 +71,3 @@ async function migrateAuditLog(): Promise<void> {
   }
 }
 
-/**
- * Clean up old plan state files from /tmp
- */
-function cleanupOldPlanStateFiles(): void {
-  const tmpDir = "/tmp";
-
-  if (!existsSync(tmpDir)) {
-    return;
-  }
-
-  try {
-    const files = readdirSync(tmpDir);
-    let removed = 0;
-
-    for (const file of files) {
-      // Match plan-state-*.json and ask-user-*.json, perm-*.json
-      if (
-        file.startsWith("plan-state-") ||
-        (file.startsWith("ask-user-") && file.endsWith(".json")) ||
-        (file.startsWith("perm-") && file.endsWith(".json"))
-      ) {
-        try {
-          unlinkSync(`${tmpDir}/${file}`);
-          removed++;
-        } catch (error) {
-          console.debug(`  Failed to remove ${file}:`, error);
-        }
-      }
-    }
-
-    if (removed > 0) {
-      console.log(`  Cleaned up ${removed} old state files from /tmp`);
-    }
-  } catch (error) {
-    console.debug("  Failed to cleanup old state files:", error);
-  }
-}

@@ -86,92 +86,39 @@ export function formatPermissionRequest(
 }
 
 /**
- * Check for pending permission requests and send inline keyboards.
+ * Display permission request UI immediately.
+ * Called directly from canUseTool callback - no scanning, no waiting.
  */
-export async function checkPendingPermissionRequests(
+export async function displayPermissionRequest(
   ctx: Context,
-  chatId: number
-): Promise<boolean> {
-  const pendingRequests = permissionStore.getPendingForChat(chatId);
-  let buttonsSent = false;
+  requestId: string,
+  formattedRequest: string
+): Promise<void> {
+  try {
+    const keyboard = createPermissionKeyboard(requestId);
 
-  for (const request of pendingRequests) {
-    try {
-      const formatted = request.formatted_request || "Permission request";
-      const keyboard = createPermissionKeyboard(request.request_id);
+    await ctx.reply(`🔐 <b>Permission Required</b>\n\n${formattedRequest}`, {
+      reply_markup: keyboard,
+      parse_mode: "HTML",
+    });
 
-      await ctx.reply(`🔐 <b>Permission Required</b>\n\n${formatted}`, {
-        reply_markup: keyboard,
-        parse_mode: "HTML",
-      });
-      buttonsSent = true;
-
-      // Mark as sent in store
-      permissionStore.update(request.request_id, "sent");
-    } catch (error) {
-      console.warn(`Failed to send permission request ${request.request_id}:`, error);
-    }
-  }
-
-  return buttonsSent;
-}
-
-/**
- * Sync ask-user requests from MCP server files to in-memory store.
- * MCP server runs as separate process and writes to /tmp/ask-user-*.json
- */
-async function syncAskUserFilesToStore(chatId: number): Promise<void> {
-  const glob = new Bun.Glob("ask-user-*.json");
-
-  for await (const filename of glob.scan({ cwd: "/tmp", absolute: false })) {
-    const filepath = `/tmp/${filename}`;
-    try {
-      const file = Bun.file(filepath);
-      const text = await file.text();
-      const data = JSON.parse(text);
-
-      // Only sync pending requests for this chat that aren't already in store
-      if (data.status !== "pending") continue;
-      if (String(data.chat_id) !== String(chatId)) continue;
-
-      const requestId = data.request_id;
-      if (!requestId) continue;
-
-      // Check if already in store
-      if (askUserStore.get(requestId)) continue;
-
-      // Add to store
-      askUserStore.create(
-        requestId,
-        data.chat_id,
-        data.question || "",
-        data.options || []
-      );
-
-      // Delete the file (now in store)
-      try {
-        const fs = await import("fs");
-        fs.unlinkSync(filepath);
-      } catch (error) {
-        console.debug(`Failed to delete synced file ${filepath}:`, error);
-      }
-    } catch (error) {
-      console.debug(`Failed to sync ask-user file ${filepath}:`, error);
-    }
+    // Mark as sent in store
+    permissionStore.update(requestId, "sent");
+    console.log(`[PERMISSION DEBUG] UI displayed for ${requestId}`);
+  } catch (error) {
+    console.error(`Failed to display permission request ${requestId}:`, error);
   }
 }
 
 /**
  * Check for pending ask-user requests and send inline keyboards.
+ * With the in-process MCP server, requests are already in the store - no file sync needed.
  */
 export async function checkPendingAskUserRequests(
   ctx: Context,
   chatId: number
 ): Promise<boolean> {
-  // First, sync any files from MCP server to store
-  await syncAskUserFilesToStore(chatId);
-
-  // Then get pending requests from store
+  // Get pending requests from store (already populated by in-process MCP server)
   const pendingRequests = askUserStore.getPendingForChat(chatId);
   let buttonsSent = false;
 

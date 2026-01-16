@@ -18,7 +18,6 @@ import {
   getPermissionMode,
   setPermissionMode,
   ALLOW_TELEGRAM_PERMISSIONS_MODE,
-  PlanStateManager,
   getModel,
   getModelName,
   setModel,
@@ -635,12 +634,11 @@ export async function handlePlan(ctx: Context): Promise<void> {
       }
     }
 
-    // Clear session
+    // Clear session (this resets session.planStateManager)
     await session.kill();
 
-    // Create pending plan mode state using PlanStateManager
-    const planStateManager = new PlanStateManager();
-    await planStateManager.transition({ type: "ENTER_PLAN_MODE" });
+    // Set plan mode state using session's manager (will persist to file)
+    await session.planStateManager.transition({ type: "ENTER_PLAN_MODE" });
 
     await ctx.reply(
       "📋 <b>Starting plan mode...</b>\n\n" +

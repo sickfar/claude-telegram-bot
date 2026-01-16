@@ -17,6 +17,7 @@ import { auditLog, startTypingIndicator } from "../utils";
 import { StreamingState, createStatusCallback } from "./streaming";
 import { askUserStore } from "../ask-user-store";
 import { permissionStore } from "../permission-store";
+import { resolvePermission } from "../permissions";
 
 /**
  * Handle callback queries from inline keyboards.
@@ -197,8 +198,8 @@ async function handlePermissionCallback(
       }
     );
 
-    // Update request in store
-    permissionStore.update(requestId, "approved");
+    // Resolve the Promise - this unblocks canUseTool callback
+    resolvePermission(requestId, true);
 
     await ctx.answerCallbackQuery({ text: "✅ Approved" });
   } else if (action === "deny") {
@@ -210,8 +211,8 @@ async function handlePermissionCallback(
       }
     );
 
-    // Update request in store
-    permissionStore.update(requestId, "denied", "Denied by user");
+    // Resolve the Promise - this unblocks canUseTool callback
+    resolvePermission(requestId, false, "Denied by user");
 
     await ctx.answerCallbackQuery({ text: "❌ Denied" });
   } else if (action === "comment") {

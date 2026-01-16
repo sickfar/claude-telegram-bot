@@ -37,12 +37,10 @@ export type PermissionResult =
  */
 class PermissionStore {
   private requests = new Map<string, PermissionRequest>();
-  private cleanupInterval: Timer | null = null;
-  private readonly CLEANUP_INTERVAL_MS = 60_000; // Check every minute
-  private readonly REQUEST_TTL_MS = 300_000; // 5 minutes
+  private resolvers = new Map<string, (result: PermissionResult) => void>();
 
   constructor() {
-    this.startCleanup();
+    // No automatic cleanup - manual cleanup on new session
   }
 
   /**
@@ -93,6 +91,18 @@ class PermissionStore {
   }
 
   /**
+   * Get request awaiting comment for a specific chat.
+   */
+  getAwaitingCommentForChat(chatId: number): PermissionRequest | null {
+    for (const request of this.requests.values()) {
+      if (request.status === "awaiting_comment" && request.chat_id === chatId) {
+        return request;
+      }
+    }
+    return null;
+  }
+
+  /**
    * Update a request's status and optional response.
    */
   update(
@@ -116,65 +126,57 @@ class PermissionStore {
   }
 
   /**
-   * Poll for permission request result with timeout.
-   * Replaces file-based polling with in-memory checks.
+   * Create a Promise that will be resolved when the user approves/denies.
+   * Event-based architecture - no polling, no timeout.
    */
-  async poll(requestId: string, timeoutMs: number): Promise<PermissionResult> {
-    const startTime = Date.now();
-    const pollInterval = 500; // Check every 500ms
+  createPromise(requestId: string): Promise<PermissionResult> {
+    console.log(`[PERMISSION DEBUG] Creating Promise for request ${requestId}`);
 
-    while (Date.now() - startTime < timeoutMs) {
-      const request = this.get(requestId);
+    return new Promise<PermissionResult>((resolve) => {
+      // Store the resolver function to be called by the callback handler
+      this.resolvers.set(requestId, resolve);
+      console.log(`[PERMISSION DEBUG] Resolver stored for ${requestId}, waiting for user action...`);
+    });
+  }
 
-      if (!request) {
-        return {
-          behavior: "deny",
-          message: "Permission request expired or was deleted",
-        };
-      }
+  /**
+   * Resolve a pending permission Promise (called from callback handler).
+   */
+  resolve(requestId: string, approved: boolean, message?: string): void {
+    const resolver = this.resolvers.get(requestId);
+    const request = this.requests.get(requestId);
 
-      if (request.status === "approved") {
-        // Parse tool_input back to object
-        try {
-          const toolInput = JSON.parse(request.tool_input);
-          // Clean up after successful approval
-          this.delete(requestId);
-          return {
-            behavior: "allow",
-            updatedInput: toolInput,
-          };
-        } catch {
-          // If parsing fails, return as empty object
-          this.delete(requestId);
-          return {
-            behavior: "allow",
-            updatedInput: {},
-          };
-        }
-      }
-
-      if (request.status === "denied") {
-        const message = request.response
-          ? `Permission denied: ${request.response}`
-          : "Permission denied by user";
-        // Clean up after denial
-        this.delete(requestId);
-        return {
-          behavior: "deny",
-          message,
-        };
-      }
-
-      // Still pending or sent - keep waiting
-      await new Promise((resolve) => setTimeout(resolve, pollInterval));
+    if (!resolver) {
+      console.warn(`[PERMISSION DEBUG] No resolver found for ${requestId}`);
+      return;
     }
 
-    // Timeout - deny by default for safety
+    console.log(`[PERMISSION DEBUG] Resolving Promise for ${requestId}: ${approved ? 'ALLOW' : 'DENY'}`);
+
+    if (approved) {
+      // Parse tool_input back to object
+      try {
+        const toolInput = JSON.parse(request?.tool_input || "{}");
+        resolver({
+          behavior: "allow",
+          updatedInput: toolInput,
+        });
+      } catch {
+        resolver({
+          behavior: "allow",
+          updatedInput: {},
+        });
+      }
+    } else {
+      resolver({
+        behavior: "deny",
+        message: message || "Permission denied by user",
+      });
+    }
+
+    // Clean up
+    this.resolvers.delete(requestId);
     this.delete(requestId);
-    return {
-      behavior: "deny",
-      message: "Permission request timed out (no response after 55 seconds)",
-    };
   }
 
   /**
@@ -182,47 +184,28 @@ class PermissionStore {
    */
   delete(requestId: string): void {
     this.requests.delete(requestId);
-    console.log(`Deleted permission request: ${requestId}`);
   }
 
   /**
-   * Start automatic cleanup of old requests.
+   * Clear all pending requests and resolve any pending Promises.
+   * Called when a new session starts.
    */
-  private startCleanup(): void {
-    this.cleanupInterval = setInterval(() => {
-      this.cleanup();
-    }, this.CLEANUP_INTERVAL_MS);
-  }
+  clearAll(): void {
+    const count = this.requests.size;
 
-  /**
-   * Remove requests older than TTL.
-   */
-  private cleanup(): void {
-    const now = Date.now();
-    let removed = 0;
-
-    for (const [requestId, request] of this.requests.entries()) {
-      const createdAt = new Date(request.created_at).getTime();
-      const age = now - createdAt;
-
-      if (age > this.REQUEST_TTL_MS) {
-        this.requests.delete(requestId);
-        removed++;
-      }
+    // Resolve any pending Promises with deny
+    for (const [requestId, resolver] of this.resolvers.entries()) {
+      resolver({
+        behavior: "deny",
+        message: "Permission request cleared (new session started)",
+      });
     }
 
-    if (removed > 0) {
-      console.log(`Cleaned up ${removed} expired permission requests`);
-    }
-  }
+    this.resolvers.clear();
+    this.requests.clear();
 
-  /**
-   * Stop cleanup interval (for testing).
-   */
-  stopCleanup(): void {
-    if (this.cleanupInterval) {
-      clearInterval(this.cleanupInterval);
-      this.cleanupInterval = null;
+    if (count > 0) {
+      console.log(`Cleared ${count} pending permission requests`);
     }
   }
 

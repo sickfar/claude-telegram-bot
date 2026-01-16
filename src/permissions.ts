@@ -50,19 +50,22 @@ export async function updatePermissionRequest(
 }
 
 /**
- * Poll for permission request result with timeout.
- * Delegates to permissionStore.poll() which handles in-memory polling.
+ * Wait for permission request result (event-based, no timeout).
+ * Creates a Promise that will be resolved by the callback handler when user clicks Allow/Deny.
  */
-export async function pollPermissionRequest(
-  requestId: string,
-  timeoutMs: number
+export async function waitForPermission(
+  requestId: string
 ): Promise<PermissionResult> {
-  return permissionStore.poll(requestId, timeoutMs);
+  return permissionStore.createPromise(requestId);
 }
 
 /**
- * Clean up permission request from the store.
+ * Resolve a pending permission request (called from callback handler).
  */
-export function cleanupPermissionRequest(requestId: string): void {
-  permissionStore.delete(requestId);
+export function resolvePermission(
+  requestId: string,
+  approved: boolean,
+  message?: string
+): void {
+  permissionStore.resolve(requestId, approved, message);
 }
