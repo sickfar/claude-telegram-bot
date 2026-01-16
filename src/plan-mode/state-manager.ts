@@ -334,9 +334,10 @@ export class PlanStateManager {
 
       case "clear":
         this.pendingApproval.status = "cleared";
-        this.pendingApproval = null;
+        // Note: Don't clear pendingApproval here - let the caller read it first
+        // The caller will clear the session which resets the state manager anyway
         await this.transition({ type: "CLEAR_CONTEXT" });
-        return [true, `🗑️ <b>Context Cleared</b>\n\nFile: <code>${planFile}</code>`, false];
+        return [true, `🔄 <b>Context Cleared - Starting Fresh</b>\n\nFile: <code>${planFile}</code>`, true];
 
       default:
         return [false, "Invalid action", false];

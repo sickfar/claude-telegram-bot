@@ -159,17 +159,35 @@ status: draft
     {
       name: "UpdatePlan",
       description:
-        "Update the active plan file with new content. Use this to refine your plan based on additional exploration or user feedback.",
+        "Replace text in the active plan file. Use this to make targeted edits to your plan based on additional exploration or user feedback.",
       inputSchema: {
-        content: z
-          .string()
-          .describe("The updated markdown content for the plan."),
+        old_string: z.string().describe("The text to replace"),
+        new_string: z.string().describe("The text to replace it with"),
+        replace_all: z
+          .boolean()
+          .optional()
+          .default(false)
+          .describe("Replace all occurrences of old_string (default: false)"),
       },
       handler: async (args) => {
-        const { content } = args as { content: string };
+        const { old_string, new_string, replace_all } = args as {
+          old_string: string;
+          new_string: string;
+          replace_all?: boolean;
+        };
 
-        if (!content) {
-          throw new Error("content parameter is required");
+        if (!old_string) {
+          throw new Error("old_string parameter is required");
+        }
+
+        if (new_string === undefined || new_string === null) {
+          throw new Error("new_string parameter is required");
+        }
+
+        if (old_string === new_string) {
+          throw new Error(
+            "old_string and new_string must be different"
+          );
         }
 
         const manager = await getPlanStateManager();
@@ -193,29 +211,43 @@ status: draft
           );
         }
 
-        // Read existing file to preserve frontmatter
+        // Read existing file
         const existingContent = await file.text();
         const frontmatterMatch = existingContent.match(/^---\n([\s\S]*?)\n---\n/);
 
-        let newContent: string;
+        // Extract plan body (without frontmatter)
+        let planBody: string;
+        let frontmatter: string;
         if (frontmatterMatch) {
-          // Preserve existing frontmatter, update content
-          const frontmatter = frontmatterMatch[0];
-          newContent = frontmatter + content;
+          frontmatter = frontmatterMatch[0];
+          planBody = existingContent.slice(frontmatter.length);
         } else {
-          // No frontmatter found, add it
-          const frontmatter = `---
+          // No frontmatter found, create it
+          frontmatter = `---
 session_id: ${sessionId}
 created_at: ${new Date().toISOString()}
 status: draft
 ---
 
 `;
-          newContent = frontmatter + content;
+          planBody = existingContent;
         }
 
+        // Check if old_string exists in plan body
+        if (!planBody.includes(old_string)) {
+          throw new Error(
+            `old_string not found in plan content: "${old_string.slice(0, 50)}${old_string.length > 50 ? "..." : ""}"`
+          );
+        }
+
+        // Perform replacement
+        const updatedBody = replace_all
+          ? planBody.replaceAll(old_string, new_string)
+          : planBody.replace(old_string, new_string);
+
+        const newContent = frontmatter + updatedBody;
         await Bun.write(planPath, newContent);
-        await manager.transition({ type: "UPDATE_PLAN", content });
+        await manager.transition({ type: "UPDATE_PLAN", content: updatedBody });
 
         return {
           content: [

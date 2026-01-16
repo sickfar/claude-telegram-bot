@@ -95,6 +95,10 @@ export async function handlePlanApprovalCallback(
   const requestId = parts[1]!;
   const action = parts[2]! as "accept" | "reject" | "clear";
 
+  // Capture approval data BEFORE state transition (which may clear it)
+  const approvalData = session.getPendingPlanApproval();
+  const oldSessionId = session.sessionId;
+
   // Use async handler to perform state transition
   const [success, message, shouldContinue] = await session.handlePlanApprovalAsync(
     requestId,
@@ -149,11 +153,8 @@ export async function handlePlanApprovalCallback(
   } else if (action === "clear") {
     await ctx.answerCallbackQuery({ text: "🔄 Starting fresh session with plan" });
 
-    // Get plan content and old session ID before killing
-    const approval = session.getPendingPlanApproval();
-    const oldSessionId = session.sessionId;
-    const planContent = approval?.planContent || "";
-    const planFile = approval?.planFile || "plan.md";
+    // Use pre-captured approval data (captured before state transition cleared it)
+    const planContent = approvalData?.planContent || "";
 
     // Get the old session log file path
     const { getClaudeProjectDir } = await import("../session-storage");
