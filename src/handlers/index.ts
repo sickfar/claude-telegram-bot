@@ -11,6 +11,8 @@ export {
   handleRestart,
   handleRetry,
   handlePermissionsCommand,
+  handlePlan,
+  handleCode,
 } from "./commands";
 export { handleText } from "./text";
 export { handleVoice } from "./voice";

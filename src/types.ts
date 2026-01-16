@@ -23,6 +23,9 @@ export interface SessionData {
   session_id: string;
   saved_at: string;
   working_dir: string;
+  plan_mode_enabled?: boolean;
+  active_plan_file?: string;
+  plan_approval_pending?: boolean;
 }
 
 // Token usage from Claude

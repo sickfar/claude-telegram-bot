@@ -40,6 +40,13 @@ export async function handleCallback(ctx: Context): Promise<void> {
       return;
     }
 
+    // Check for plan approval callback
+    if (callbackData.startsWith("planapproval:")) {
+      const { handlePlanApprovalCallback } = await import("./plan-approval");
+      await handlePlanApprovalCallback(ctx, callbackData, chatId);
+      return;
+    }
+
     await ctx.answerCallbackQuery();
     return;
   }

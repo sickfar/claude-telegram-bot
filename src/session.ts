@@ -11,6 +11,7 @@ import {
   type SDKMessage,
 } from "@anthropic-ai/claude-agent-sdk";
 import { readFileSync } from "fs";
+import { homedir } from "os";
 import type { Context } from "grammy";
 import {
   ALLOWED_PATHS,
@@ -74,6 +75,36 @@ function getTextFromMessage(msg: SDKMessage): string | null {
 }
 
 /**
+ * Get plan mode system prompt if plan mode is active.
+ */
+async function getPlanModePrompt(
+  sessionId: string | null
+): Promise<string | undefined> {
+  if (!sessionId) return undefined;
+
+  const stateFile = `/tmp/plan-state-${sessionId}.json`;
+  const file = Bun.file(stateFile);
+  if (!(await file.exists())) return undefined;
+
+  const state = JSON.parse(await file.text());
+  if (!state.plan_mode_enabled) return undefined;
+
+  return `
+CRITICAL: PLAN MODE ACTIVE
+
+You are in READ-ONLY planning mode. You MUST ONLY use these tools:
+- Read, Glob, Grep: For exploring the codebase
+- Bash: For read-only commands only (no modifications)
+- WritePlan, UpdatePlan, ExitPlanMode: For creating/updating your plan
+
+You CANNOT use Write, Edit, or any tools that modify system state.
+
+Your task: Explore the codebase and create a detailed implementation plan.
+When done, call ExitPlanMode to present your plan for approval.
+`;
+}
+
+/**
  * Manages Claude Code sessions using the Agent SDK V1.
  */
 class ClaudeSession {
@@ -92,6 +123,8 @@ class ClaudeSession {
   private stopRequested = false;
   private _isProcessing = false;
   private _wasInterruptedByNewMessage = false;
+  private pendingPlanInjection: { filename: string; content: string } | null =
+    null;
 
   get isActive(): boolean {
     return this.sessionId !== null;
@@ -176,9 +209,12 @@ class ClaudeSession {
     chatId?: number,
     ctx?: Context
   ): Promise<string> {
-    // Set chat context for ask_user MCP tool
+    // Set chat context for ask_user and plan_mode MCP tools
     if (chatId) {
       process.env.TELEGRAM_CHAT_ID = String(chatId);
+    }
+    if (this.sessionId) {
+      process.env.TELEGRAM_SESSION_ID = this.sessionId;
     }
 
     const isNewSession = !this.isActive;
@@ -187,8 +223,15 @@ class ClaudeSession {
       { 0: "off", 10000: "normal", 50000: "deep" }[thinkingTokens] ||
       String(thinkingTokens);
 
-    // Inject current date/time at session start so Claude doesn't need to call a tool for it
+    // Check for pending plan injection
     let messageToSend = message;
+    if (this.pendingPlanInjection) {
+      const { filename, content } = this.pendingPlanInjection;
+      messageToSend = `[CONTEXT: Resumed session with active plan]\n\nPlan file: ${filename}\n\n${content}\n\n---\n\n${message}`;
+      this.pendingPlanInjection = null;
+    }
+
+    // Inject current date/time at session start so Claude doesn't need to call a tool for it
     if (isNewSession) {
       const now = new Date();
       const datePrefix = `[Current date/time: ${now.toLocaleDateString(
@@ -203,8 +246,14 @@ class ClaudeSession {
           timeZoneName: "short",
         }
       )}]\n\n`;
-      messageToSend = datePrefix + message;
+      messageToSend = datePrefix + messageToSend;
     }
+
+    // Build system prompt with plan mode if active
+    const planModePrompt = await getPlanModePrompt(this.sessionId);
+    const systemPrompt = planModePrompt
+      ? `${SAFETY_PROMPT}\n\n${planModePrompt}`
+      : SAFETY_PROMPT;
 
     // Build SDK V1 options - supports all features
     const options: Options = {
@@ -214,7 +263,7 @@ class ClaudeSession {
       permissionMode:
         getPermissionMode() === "interactive" ? "default" : "bypassPermissions",
       allowDangerouslySkipPermissions: getPermissionMode() !== "interactive",
-      systemPrompt: SAFETY_PROMPT,
+      systemPrompt: systemPrompt,
       mcpServers: MCP_SERVERS,
       maxThinkingTokens: thinkingTokens,
       additionalDirectories: ALLOWED_PATHS,
@@ -268,6 +317,12 @@ class ClaudeSession {
 
         return result;
       },
+
+      // NOTE: Context compaction hooks are commented out due to type compatibility issues
+      // with the Agent SDK. Plan context is preserved via session file and re-injected
+      // on resume instead. This provides equivalent functionality without the hooks API.
+      //
+      // TODO: Revisit hooks when SDK provides clearer type definitions or examples
     };
 
     // Add Claude Code executable path if set (required for standalone builds)
@@ -427,6 +482,18 @@ class ClaudeSession {
                 }
               }
 
+              // Check for pending plan approvals after ExitPlanMode
+              if (toolName.startsWith("mcp__plan-mode__ExitPlanMode") && ctx && chatId) {
+                // Small delay to let MCP server write the file
+                await new Promise((resolve) => setTimeout(resolve, 200));
+
+                // Import and check for pending plan approvals
+                const { checkPendingPlanApprovals } = await import(
+                  "./handlers/plan-approval"
+                );
+                await checkPendingPlanApprovals(ctx, chatId);
+              }
+
               // Check for pending permission requests (interactive mode)
               if (ctx && chatId && getPermissionMode() === "interactive") {
                 await checkPendingPermissionRequests(ctx, chatId);
@@ -534,7 +601,7 @@ class ClaudeSession {
   /**
    * Save session to disk for resume after restart.
    */
-  private saveSession(): void {
+  private async saveSession(): Promise<void> {
     if (!this.sessionId) return;
 
     try {
@@ -543,7 +610,24 @@ class ClaudeSession {
         saved_at: new Date().toISOString(),
         working_dir: WORKING_DIR,
       };
-      Bun.write(SESSION_FILE, JSON.stringify(data));
+
+      // Check for active plan mode state
+      const stateFile = `/tmp/plan-state-${this.sessionId}.json`;
+      const file = Bun.file(stateFile);
+      if (await file.exists()) {
+        const state = JSON.parse(await file.text());
+        if (state.plan_mode_enabled) {
+          data.plan_mode_enabled = true;
+        }
+        if (state.active_plan_file) {
+          data.active_plan_file = state.active_plan_file;
+        }
+        if (state.plan_approval_pending) {
+          data.plan_approval_pending = true;
+        }
+      }
+
+      await Bun.write(SESSION_FILE, JSON.stringify(data));
       console.log(`Session saved to ${SESSION_FILE}`);
     } catch (error) {
       console.warn(`Failed to save session: ${error}`);
@@ -553,7 +637,7 @@ class ClaudeSession {
   /**
    * Resume the last persisted session.
    */
-  resumeLast(): [success: boolean, message: string] {
+  async resumeLast(): Promise<[success: boolean, message: string]> {
     try {
       const file = Bun.file(SESSION_FILE);
       if (!file.size) {
@@ -581,6 +665,29 @@ class ClaudeSession {
           data.saved_at
         })`
       );
+
+      // Check for active plan and inject into context
+      if (data.active_plan_file) {
+        const HOME = homedir();
+        const planPath = `${HOME}/.claude/plans/${data.active_plan_file}`;
+        const planFile = Bun.file(planPath);
+
+        if (await planFile.exists()) {
+          console.log(`Found active plan: ${data.active_plan_file}`);
+
+          // Store plan for injection into next message
+          this.pendingPlanInjection = {
+            filename: data.active_plan_file,
+            content: await planFile.text(),
+          };
+
+          return [
+            true,
+            `Resumed session with active plan: ${data.active_plan_file}`,
+          ];
+        }
+      }
+
       return [
         true,
         `Resumed session \`${data.session_id.slice(0, 8)}...\` (saved at ${

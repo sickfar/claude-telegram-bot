@@ -198,7 +198,7 @@ export async function handleResume(ctx: Context): Promise<void> {
     return;
   }
 
-  const [success, message] = session.resumeLast();
+  const [success, message] = await session.resumeLast();
   if (success) {
     await ctx.reply(`✅ ${message}`);
   } else {
@@ -348,4 +348,101 @@ export async function handlePermissionsCommand(
   } else {
     await ctx.reply("❌ Failed to change permission mode.");
   }
+}
+
+/**
+ * /plan - Enter plan mode (read-only exploration).
+ */
+export async function handlePlan(ctx: Context): Promise<void> {
+  const userId = ctx.from?.id;
+
+  if (!isAuthorized(userId, ALLOWED_USERS)) {
+    await ctx.reply("Unauthorized.");
+    return;
+  }
+
+  if (!session.isActive || !session.sessionId) {
+    await ctx.reply("❌ No active session. Send a message first to start a session.");
+    return;
+  }
+
+  // Create plan mode state
+  const stateFile = `/tmp/plan-state-${session.sessionId}.json`;
+  const state = {
+    session_id: session.sessionId,
+    plan_mode_enabled: true,
+    active_plan_file: null,
+    plan_created_at: new Date().toISOString(),
+    restricted_tools: [
+      "Read",
+      "Glob",
+      "Grep",
+      "Bash",
+      "WritePlan",
+      "UpdatePlan",
+      "ExitPlanMode",
+    ],
+  };
+
+  await Bun.write(stateFile, JSON.stringify(state, null, 2));
+
+  await ctx.reply(
+    "📋 <b>Plan mode activated</b>\n\n" +
+      "You are now in READ-ONLY exploration mode. Claude can:\n" +
+      "• Read and explore the codebase\n" +
+      "• Run read-only Bash commands\n" +
+      "• Create and update implementation plans\n\n" +
+      "Claude <b>cannot</b>:\n" +
+      "• Write or edit files\n" +
+      "• Make any system modifications\n\n" +
+      "Use /code to exit plan mode and proceed with implementation.",
+    {
+      parse_mode: "HTML",
+    }
+  );
+}
+
+/**
+ * /code - Exit plan mode or continue to execution.
+ */
+export async function handleCode(ctx: Context): Promise<void> {
+  const userId = ctx.from?.id;
+
+  if (!isAuthorized(userId, ALLOWED_USERS)) {
+    await ctx.reply("Unauthorized.");
+    return;
+  }
+
+  if (!session.isActive || !session.sessionId) {
+    await ctx.reply("❌ No active session.");
+    return;
+  }
+
+  // Check if plan mode is active
+  const stateFile = `/tmp/plan-state-${session.sessionId}.json`;
+  const file = Bun.file(stateFile);
+
+  if (!(await file.exists())) {
+    await ctx.reply("ℹ️ Plan mode is not active.");
+    return;
+  }
+
+  const state = JSON.parse(await file.text());
+
+  if (!state.plan_mode_enabled) {
+    await ctx.reply("ℹ️ Plan mode is not active.");
+    return;
+  }
+
+  // Disable plan mode
+  state.plan_mode_enabled = false;
+  await Bun.write(stateFile, JSON.stringify(state, null, 2));
+
+  await ctx.reply(
+    "💻 <b>Plan mode exited</b>\n\n" +
+      "Claude can now execute code and make system modifications.",
+    {
+      parse_mode: "HTML",
+    }
+  );
 }
