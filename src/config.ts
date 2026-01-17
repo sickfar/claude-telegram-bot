@@ -34,6 +34,9 @@ let currentModel: ModelName = MODEL_DEFAULT;
 const THINKING_DEFAULT: number = parseInt(process.env.THINKING_DEFAULT || "10000", 10);
 let currentThinkingLevel: number = THINKING_DEFAULT;
 
+// Voice locale configuration
+let currentVoiceLocale: string = "en-US";  // Default to English US
+
 // Ensure necessary paths are available for Claude's bash commands
 // LaunchAgents don't inherit the full shell environment
 const EXTRA_PATHS = [
@@ -102,6 +105,7 @@ function savePersistentConfig(): void {
       working_dir: currentWorkingDir,
       model: currentModel,
       thinking_level: currentThinkingLevel,
+      voice_locale: currentVoiceLocale,
       saved_at: new Date().toISOString(),
     };
     Bun.write(PERSISTENT_CONFIG_FILE, JSON.stringify(config, null, 2));
@@ -157,6 +161,12 @@ function loadPersistentConfig(): void {
               } else {
                 console.log(`✗ Invalid thinking_level in config: ${config.thinking_level}, using default`);
               }
+            }
+
+            // Restore voice locale if present
+            if (config.voice_locale && typeof config.voice_locale === "string") {
+              currentVoiceLocale = config.voice_locale;
+              console.log(`✓ Restored voice locale: ${currentVoiceLocale}`);
             }
 
             return;
@@ -337,7 +347,29 @@ export const TRANSCRIPTION_PROMPT = TRANSCRIPTION_CONTEXT
   ? `${BASE_TRANSCRIPTION_PROMPT}\n\nAdditional context:\n${TRANSCRIPTION_CONTEXT}`
   : BASE_TRANSCRIPTION_PROMPT;
 
-export const TRANSCRIPTION_AVAILABLE = !!OPENAI_API_KEY;
+// Target translation language (default: English)
+export const VOICE_TRANSLATION_TARGET =
+  process.env.VOICE_TRANSLATION_TARGET || "en";
+
+// Check tool availability (import from utils)
+import { checkVoiceToolsAvailability } from "./utils";
+const VOICE_TOOLS = checkVoiceToolsAvailability();
+
+export const TRANSCRIPTION_AVAILABLE = VOICE_TOOLS.allAvailable;
+export { VOICE_TOOLS };
+
+// Log status at startup
+if (TRANSCRIPTION_AVAILABLE) {
+  console.log(
+    `Voice transcription enabled (locale: ${currentVoiceLocale} → ${VOICE_TRANSLATION_TARGET})`
+  );
+} else {
+  const missing = [];
+  if (!VOICE_TOOLS.ffmpeg) missing.push("ffmpeg (brew install ffmpeg)");
+  if (!VOICE_TOOLS.hear) missing.push("hear");
+  if (!VOICE_TOOLS.trans) missing.push("translate-shell (brew install translate-shell)");
+  console.warn(`Voice transcription disabled. Missing: ${missing.join(", ")}`);
+}
 
 // ============== Media Group Settings ==============
 
@@ -489,6 +521,36 @@ export function getThinkingLevelName(): string {
     50000: "deep",
   };
   return levelMap[currentThinkingLevel] || "unknown";
+}
+
+// ============== Voice Locale Management ==============
+
+/**
+ * Get current voice locale for speech recognition.
+ * @returns Current voice locale (e.g., "en-US", "ru-RU")
+ */
+export function getVoiceLocale(): string {
+  return currentVoiceLocale;
+}
+
+/**
+ * Set voice locale for speech recognition.
+ * Accepts both dash (en-US) and underscore (en_US) formats.
+ * @param locale - Locale string (e.g., "en-US", "en_US", "ru-RU")
+ * @returns true if locale was set, false if invalid
+ */
+export function setVoiceLocale(locale: string): boolean {
+  // Basic validation: must be at least 2 chars
+  if (!locale || locale.length < 2) {
+    return false;
+  }
+
+  // Normalize: convert underscore to dash (hear uses dash format)
+  const normalizedLocale = locale.replace(/_/g, "-");
+
+  currentVoiceLocale = normalizedLocale;
+  savePersistentConfig();
+  return true;
 }
 
 console.log(

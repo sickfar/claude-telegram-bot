@@ -5,14 +5,15 @@
 import type { Context } from "grammy";
 import { unlinkSync } from "fs";
 import { session } from "../session";
-import { ALLOWED_USERS, TEMP_DIR, TRANSCRIPTION_AVAILABLE } from "../config";
+import { ALLOWED_USERS, TEMP_DIR, TRANSCRIPTION_AVAILABLE, getVoiceLocale, VOICE_TRANSLATION_TARGET } from "../config";
 import { isAuthorized, rateLimiter } from "../security";
 import {
   auditLog,
   auditLogRateLimit,
-  transcribeVoice,
+  processVoiceMessage,
   startTypingIndicator,
 } from "../utils";
+import { escapeHtml } from "../formatting";
 import { StreamingState, createStatusCallback } from "./streaming";
 
 /**
@@ -37,7 +38,7 @@ export async function handleVoice(ctx: Context): Promise<void> {
   // 2. Check if transcription is available
   if (!TRANSCRIPTION_AVAILABLE) {
     await ctx.reply(
-      "Voice transcription is not configured. Set OPENAI_API_KEY in .env"
+      "Voice transcription is not configured. Ensure ffmpeg, hear, and translate-shell are installed."
     );
     return;
   }
@@ -73,34 +74,53 @@ export async function handleVoice(ctx: Context): Promise<void> {
     const buffer = await downloadRes.arrayBuffer();
     await Bun.write(voicePath, buffer);
 
-    // 7. Transcribe
+    // 7. Transcribe and translate
     const statusMsg = await ctx.reply("🎤 Transcribing...");
 
-    const transcript = await transcribeVoice(voicePath);
-    if (!transcript) {
+    // Get current voice locale
+    const locale = getVoiceLocale();
+
+    // Process voice message with locale and translation target
+    const result = await processVoiceMessage(
+      voicePath,
+      locale,
+      VOICE_TRANSLATION_TARGET
+    );
+
+    if (!result) {
       await ctx.api.editMessageText(
         chatId,
         statusMsg.message_id,
-        "❌ Transcription failed."
+        "❌ Voice processing failed. Ensure ffmpeg, hear, and translate-shell are installed."
       );
       stopProcessing();
       return;
     }
 
-    // 8. Show transcript
+    // 8. Show appropriate message based on whether translation occurred
+    let displayText: string;
+    if (result.wasTranslated) {
+      // Show both original and translated
+      displayText = `🎤 Original: ${escapeHtml(result.original)}\n🌐 ${VOICE_TRANSLATION_TARGET.toUpperCase()}: ${escapeHtml(result.translated)}`;
+    } else {
+      // No translation needed, show only transcribed text
+      displayText = `🎤 ${escapeHtml(result.original)}`;
+    }
+
     await ctx.api.editMessageText(
       chatId,
       statusMsg.message_id,
-      `🎤 "${transcript}"`
+      displayText,
+      { parse_mode: "HTML" }
     );
 
     // 9. Create streaming state and callback
     const state = new StreamingState();
     const statusCallback = createStatusCallback(ctx, state);
 
-    // 10. Send to Claude
+    // 10. Send translated text to Claude (or original if no translation)
     const claudeResponse = await session.sendMessageStreaming(
-      transcript,
+      result.translated,
       username,
       userId,
       statusCallback,
@@ -109,7 +129,11 @@ export async function handleVoice(ctx: Context): Promise<void> {
     );
 
     // 11. Audit log
-    await auditLog(userId, username, "VOICE", transcript, claudeResponse);
+    const auditContent = result.wasTranslated
+      ? `Original: ${result.original}\n${VOICE_TRANSLATION_TARGET}: ${result.translated}`
+      : result.original;
+
+    await auditLog(userId, username, "VOICE", auditContent, claudeResponse);
   } catch (error) {
     console.error("Error processing voice:", error);
 

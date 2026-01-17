@@ -13,7 +13,7 @@ bun install        # Install dependencies
 
 ## Architecture
 
-This is a Telegram bot (~3,300 lines TypeScript) that lets you control Claude Code from your phone via text, voice, photos, and documents. Built with Bun and grammY.
+This is a Telegram bot (~7,700 lines TypeScript) that lets you control Claude Code from your phone via text, voice, photos, and documents. Built with Bun and grammY.
 
 ### Message Flow
 
@@ -23,24 +23,54 @@ Telegram message → Handler → Auth check → Rate limit → Claude session �
 
 ### Key Modules
 
+**Core**
 - **`src/index.ts`** - Entry point, registers handlers, starts polling
 - **`src/config.ts`** - Environment parsing, MCP loading, safety prompts
-- **`src/session.ts`** - `ClaudeSession` class wrapping Agent SDK V2 with streaming, session persistence (`~/.sickfar/sessions/`), and defense-in-depth safety checks
+- **`src/session.ts`** - `ClaudeSession` class wrapping Agent SDK V2 with streaming, session persistence, and defense-in-depth safety checks
+- **`src/types.ts`** - Shared TypeScript types
+
+**Security & Permissions**
 - **`src/security.ts`** - `RateLimiter` (token bucket), path validation, command safety checks
+- **`src/permissions.ts`** - Permission request storage and promise-based waiting, persistent project permissions
+- **`src/permission-store.ts`** - In-memory permission request storage with event-based waiting
+
+**Storage & Persistence**
+- **`src/session-storage.ts`** - Session state persistence to `~/.sickfar/sessions/`
+- **`src/ask-user-store.ts`** - Ask-user callback storage and results tracking
+- **`src/migrations.ts`** - Storage migration orchestrator (moves data from /tmp to ~/.sickfar/)
+
+**MCP Servers (In-Process)**
+- **`src/plan-mode-mcp.ts`** - Plan mode tools (in-memory, replaces external stdio server)
+- **`src/telegram-tools-mcp.ts`** - Telegram-specific operations (SendFileToTelegram)
+- **`src/plan-mode/constants.ts`** - Plan mode configuration and restricted tools
+
+**Formatting & Utilities**
 - **`src/formatting.ts`** - Markdown→HTML conversion for Telegram, tool status emoji formatting
 - **`src/utils.ts`** - Audit logging, voice transcription (OpenAI), typing indicators
-- **`src/types.ts`** - Shared TypeScript types
+- **`src/audit-logger.ts`** - Structured audit logging with rotation (10MB max, keeps 5 files)
 
 ### Handlers (`src/handlers/`)
 
 Each message type has a dedicated async handler:
-- **`commands.ts`** - `/start`, `/new`, `/plan`, `/code`, `/stop`, `/status`, `/project`, `/resume`, `/restart`, `/retry`, `/permissions`
+
+**Command & Message Handlers**
+- **`commands.ts`** - Commands: `/start`, `/new`, `/plan`, `/code`, `/stop`, `/status`, `/project`, `/resume`, `/restart`, `/retry`, `/permissions`
 - **`text.ts`** - Text messages with intent filtering
 - **`voice.ts`** - Voice→text via OpenAI, then same flow as text
+
+**Media Handlers**
 - **`photo.ts`** - Image analysis with media group buffering (1s timeout for albums)
+- **`media-group.ts`** - Media group assembly and coordination
 - **`document.ts`** - PDF extraction (pdftotext CLI) and text file processing
-- **`callback.ts`** - Inline keyboard button handling for ask_user MCP
+
+**Interactive & Callback Handlers**
+- **`callback.ts`** - Inline keyboard button handling for ask_user MCP and permission dialogs
+- **`ask-user-other.ts`** - Additional ask_user callback handling
+- **`plan-approval.ts`** - Plan mode approval flow handling
+
+**Streaming & State**
 - **`streaming.ts`** - Shared `StreamingState` and status callback factory
+- **`index.ts`** - Handler registration and exports
 
 ### Security Layers
 

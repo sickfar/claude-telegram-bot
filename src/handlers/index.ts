@@ -14,6 +14,7 @@ export {
   handlePermissionsCommand,
   handleModel,
   handleThinking,
+  handleVoiceLocale,
   handlePlan,
   handleCode,
 } from "./commands";

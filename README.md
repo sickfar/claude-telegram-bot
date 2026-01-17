@@ -17,8 +17,6 @@ In fact, while Claude Code is described as a powerful AI **coding agent**, it's 
 
 To achieve this, I set up a folder with a CLAUDE.md that teaches Claude about me (my preferences, where my notes live, my workflows), has a set of tools and scripts based on my needs, and pointed this bot at that folder.
 
-→ **[📄 See the Personal Assistant Guide](docs/personal-assistant-guide.md)** for detailed setup and examples.
-
 ## Bot Features
 
 - 💬 **Text**: Ask questions, give instructions, have conversations
@@ -82,9 +80,12 @@ Then send `/setcommands` to BotFather and paste this:
 ```
 start - Show status and user ID
 new - Start a fresh session
+plan - Send a message in plan mode
+code - Exit plan mode and start coding
 resume - Resume last session
 stop - Interrupt current query
 status - Check what Claude is doing
+project - Switch project directory
 restart - Restart the bot
 retry - Retry the last message
 permissions - View or change permission mode
@@ -100,9 +101,10 @@ TELEGRAM_BOT_TOKEN=1234567890:ABC-DEF...   # From @BotFather
 TELEGRAM_ALLOWED_USERS=123456789           # Your Telegram user ID
 
 # Recommended
-CLAUDE_WORKING_DIR=/path/to/your/folder    # Where Claude runs (loads CLAUDE.md, skills, MCP)
-OPENAI_API_KEY=sk-...                      # For voice transcription
+PROJECTS_ROOT=/path/to/projects            # Parent directory for all projects (default: home)
 ```
+
+**Note:** OpenAI API key is no longer required for voice transcription. The bot now uses on-device transcription via system tools.
 
 **Finding your Telegram user ID:** Message [@userinfobot](https://t.me/userinfobot) on Telegram.
 
@@ -171,16 +173,48 @@ The bot includes a built-in `ask_user` MCP server that lets Claude present optio
 
 ## Bot Commands
 
-| Command        | Description                            |
-| -------------- | -------------------------------------- |
-| `/start`       | Show status and your user ID           |
-| `/new`         | Start a fresh session                  |
-| `/resume`      | Resume last session after restart      |
-| `/stop`        | Interrupt current query                |
-| `/status`      | Check what Claude is doing             |
-| `/restart`     | Restart the bot                        |
-| `/retry`       | Retry the last message                 |
-| `/permissions` | View or change permission mode         |
+| Command        | Description                                                    |
+| -------------- | -------------------------------------------------------------- |
+| `/start`       | Show status and your user ID                                   |
+| `/new`         | Start a fresh session                                          |
+| `/plan`        | Send a message in plan mode (read-only exploration)            |
+| `/code`        | Exit plan mode and proceed with implementation                 |
+| `/project`     | Switch to a different project directory                        |
+| `/resume`      | Resume last session after restart                              |
+| `/stop`        | Interrupt current query                                        |
+| `/status`      | Check what Claude is doing                                     |
+| `/restart`     | Restart the bot                                                |
+| `/retry`       | Retry the last message                                         |
+| `/permissions` | View or change permission mode (interactive vs bypass)          |
+
+## Plan Mode
+
+Plan mode enables read-only exploration before implementation. This is useful when you want Claude to investigate a codebase, design an approach, or think through a problem before making changes.
+
+**How it works:**
+
+1. Send `/plan` followed by your message to enter plan mode
+2. Claude can use `Read`, `Glob`, `Grep`, and `Bash` (read-only) tools to explore
+3. Claude cannot write or edit files
+4. When ready, Claude creates an implementation plan
+5. You can approve the plan, and then use `/code` to switch to implementation mode and proceed
+
+**Example:**
+
+```
+/plan I want to add a dark mode toggle to the app. Can you explore the codebase and design an approach?
+
+[Claude explores the codebase, examines existing styles, and creates a plan]
+
+/code
+[Claude now implements the plan with full file write access]
+```
+
+Plan mode is great for:
+- Exploring unfamiliar codebases
+- Getting a second opinion before refactoring
+- Planning complex features
+- Ensuring you're on the right track before implementation
 
 ## Running as a Service (macOS)
 
@@ -256,14 +290,15 @@ Multiple layers protect against misuse:
 
 **Voice messages fail**
 
-- Ensure `OPENAI_API_KEY` is set in `.env`
-- Verify the key is valid and has credits
+- Ensure your system has audio transcription tools installed
+- Check bot logs for transcription errors: `tail -f /tmp/claude-telegram-bot-ts.err`
 
 **Claude can't access files**
 
-- Check `CLAUDE_WORKING_DIR` points to an existing directory
+- Check `PROJECTS_ROOT` points to an existing directory (or use `/project` command to switch)
 - Verify `ALLOWED_PATHS` includes directories you want Claude to access
 - Ensure the bot process has read/write permissions
+- By default, Claude can access: PROJECTS_ROOT, ~/Documents, ~/Downloads, ~/Desktop, ~/.claude
 
 **MCP tools not working**
 

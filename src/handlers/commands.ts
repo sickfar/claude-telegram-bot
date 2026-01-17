@@ -27,6 +27,8 @@ import {
   getThinkingLevel,
   getThinkingLevelName,
   setThinkingLevel,
+  getVoiceLocale,
+  setVoiceLocale,
 } from "../config";
 import { isAuthorized, validateProjectPath } from "../security";
 import { auditLog } from "../utils";
@@ -67,6 +69,7 @@ export async function handleStart(ctx: Context): Promise<void> {
       `/permissions - View/change permission mode\n` +
       `/model - Switch Claude model\n` +
       `/thinking - Toggle extended thinking\n` +
+      `/voicelocale - Set voice recognition locale\n` +
       `/restart - Restart the bot\n\n` +
       `<b>Tips:</b>\n` +
       `• Prefix with <code>!</code> to interrupt current query\n` +
@@ -677,6 +680,67 @@ export async function handleThinking(ctx: Context): Promise<void> {
     `Thinking level set to <b>${levelName}</b> (${level} tokens)`,
     { parse_mode: "HTML" }
   );
+}
+
+/**
+ * /voicelocale - Set voice recognition locale
+ */
+export async function handleVoiceLocale(ctx: Context): Promise<void> {
+  const userId = ctx.from?.id;
+  const username = ctx.from?.username || "unknown";
+
+  if (!userId) return;
+
+  // Authorization check
+  if (!isAuthorized(userId, ALLOWED_USERS)) {
+    await ctx.reply("Unauthorized. Contact the bot owner for access.");
+    return;
+  }
+
+  // Get locale from command argument
+  const commandText = ctx.message?.text || "";
+  const locale = commandText.split(/\s+/)[1]?.trim();
+
+  if (!locale) {
+    // Show current locale
+    const current = getVoiceLocale();
+    await ctx.reply(
+      `Current voice locale: <b>${current}</b>\n\n` +
+      `To change: <code>/voicelocale &lt;locale&gt;</code>\n` +
+      `Example: <code>/voicelocale ru-RU</code>\n\n` +
+      `Common locales:\n` +
+      `• <code>en-US</code> - English (US)\n` +
+      `• <code>ru-RU</code> - Russian\n` +
+      `• <code>de-DE</code> - German\n` +
+      `• <code>es-ES</code> - Spanish\n` +
+      `• <code>fr-FR</code> - French\n` +
+      `• <code>ja-JP</code> - Japanese\n\n` +
+      `Run <code>hear -s</code> to see all available locales.\n\n` +
+      `Note: Both dash (en-US) and underscore (en_US) formats are accepted.`,
+      { parse_mode: "HTML" }
+    );
+    return;
+  }
+
+  // Set new locale
+  const success = setVoiceLocale(locale);
+  if (!success) {
+    await ctx.reply(
+      `❌ Invalid locale format: <code>${locale}</code>\n\n` +
+      `Locale should be in format like <code>en-US</code> or <code>ru-RU</code>`,
+      { parse_mode: "HTML" }
+    );
+    return;
+  }
+
+  await ctx.reply(
+    `✅ Voice locale set to: <b>${locale}</b>\n\n` +
+    `Voice messages will now be transcribed in this language.`,
+    { parse_mode: "HTML" }
+  );
+
+  // Audit log
+  await auditLog(userId, username, "COMMAND", `/voicelocale ${locale}`);
 }
 
 /**
