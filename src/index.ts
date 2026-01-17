@@ -31,7 +31,7 @@ import { isPendingCustomInput } from "./handlers/ask-user-other";
 import { isPendingCommentary } from "./handlers/plan-approval";
 
 // Create bot instance
-const bot = new Bot(TELEGRAM_TOKEN);
+export const bot = new Bot(TELEGRAM_TOKEN);
 
 // Sequentialize non-command messages per user (prevents race conditions)
 // Commands bypass sequentialization so they work immediately

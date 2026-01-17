@@ -183,6 +183,19 @@ function findClaudeCli(): string {
 
 export const CLAUDE_CLI_PATH = findClaudeCli();
 
+// ============== Rate Limiting ==============
+
+export const RATE_LIMIT_ENABLED =
+  (process.env.RATE_LIMIT_ENABLED || "true").toLowerCase() === "true";
+export const RATE_LIMIT_REQUESTS = parseInt(
+  process.env.RATE_LIMIT_REQUESTS || "20",
+  10
+);
+export const RATE_LIMIT_WINDOW = parseInt(
+  process.env.RATE_LIMIT_WINDOW || "60",
+  10
+);
+
 // ============== MCP Configuration ==============
 
 // MCP servers loaded from mcp-config.ts
@@ -348,19 +361,6 @@ export const AUDIT_LOG_MAX_SIZE_MB = parseInt(
 );
 export const AUDIT_LOG_MAX_FILES = parseInt(
   process.env.AUDIT_LOG_MAX_FILES || "5",
-  10
-);
-
-// ============== Rate Limiting ==============
-
-export const RATE_LIMIT_ENABLED =
-  (process.env.RATE_LIMIT_ENABLED || "true").toLowerCase() === "true";
-export const RATE_LIMIT_REQUESTS = parseInt(
-  process.env.RATE_LIMIT_REQUESTS || "20",
-  10
-);
-export const RATE_LIMIT_WINDOW = parseInt(
-  process.env.RATE_LIMIT_WINDOW || "60",
   10
 );
 

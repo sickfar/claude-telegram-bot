@@ -80,6 +80,24 @@ Use `/plan <message>` to send a message to Claude in plan mode:
 - Use `/code` to exit plan mode and proceed with implementation
 - Plan state is stored in-memory only (no file persistence)
 
+### Telegram Tools MCP
+
+Custom in-process MCP server providing Telegram-specific operations:
+
+**SendFileToTelegram** - Send files from project to Telegram chat
+- Accepts absolute or relative paths (relative to current working directory)
+- Maximum file size: 50MB (Telegram bot limit)
+- Requires user approval in interactive mode (not pre-approved)
+- Optional caption parameter (max 1024 characters)
+- Validates paths against allowed directories
+- Example: Claude can send you a generated report or log file directly to the chat
+
+Usage example:
+```
+User: "Generate a summary report and send it to me"
+Claude: [creates report.md] [uses SendFileToTelegram tool] "I've sent the report to your chat"
+```
+
 ### Runtime Files
 
 - `~/.sickfar/sessions/` - Session persistence for `/resume`
