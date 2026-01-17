@@ -223,21 +223,42 @@ export const RATE_LIMIT_WINDOW = parseInt(
 
 // ============== MCP Configuration ==============
 
-// MCP servers loaded from mcp-config.ts
-let MCP_SERVERS: Record<string, McpServerConfig> = {};
+import { CORE_MCP_SERVERS } from "./mcp-servers";
 
+// Start with core MCP servers (always available)
+let MCP_SERVERS: Record<string, McpServerConfig> = { ...CORE_MCP_SERVERS };
+
+// Load external MCP servers from mcp-config.ts (optional, git-ignored)
 try {
-  // Dynamic import of MCP config
   const mcpConfigPath = resolve(dirname(import.meta.dir), "mcp-config.ts");
   const mcpModule = await import(mcpConfigPath).catch(() => null);
   if (mcpModule?.MCP_SERVERS) {
-    MCP_SERVERS = mcpModule.MCP_SERVERS;
+    const externalServers = mcpModule.MCP_SERVERS as Record<
+      string,
+      McpServerConfig
+    >;
+    // Merge external servers, but don't override core servers
+    for (const [name, config] of Object.entries(externalServers)) {
+      if (name in CORE_MCP_SERVERS) {
+        console.warn(
+          `Warning: External MCP server "${name}" conflicts with core server, skipping`
+        );
+        continue;
+      }
+      MCP_SERVERS[name] = config;
+    }
     console.log(
-      `Loaded ${Object.keys(MCP_SERVERS).length} MCP servers from mcp-config.ts`
+      `Loaded ${Object.keys(MCP_SERVERS).length} MCP servers (${Object.keys(CORE_MCP_SERVERS).length} core + ${Object.keys(externalServers).length} external)`
+    );
+  } else {
+    console.log(
+      `Loaded ${Object.keys(CORE_MCP_SERVERS).length} core MCP servers (no external config found)`
     );
   }
-} catch {
-  console.log("No mcp-config.ts found - running without MCPs");
+} catch (error) {
+  console.log(
+    `Loaded ${Object.keys(CORE_MCP_SERVERS).length} core MCP servers (no external config)`
+  );
 }
 
 export { MCP_SERVERS };

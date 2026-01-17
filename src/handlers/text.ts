@@ -51,12 +51,21 @@ export async function handleText(ctx: Context): Promise<void> {
   }
 
   // 4. Check if this is a reply to a permission comment request
+  // First check if it's a reply to the comment prompt
   if (ctx.message?.reply_to_message) {
     const replyText = ctx.message.reply_to_message.text || "";
-    if (replyText.includes("Please provide a reason for denial:")) {
+    if (replyText.includes("Please provide a reason for denial:") || replyText.includes("Type your reason:")) {
       await handlePermissionComment(ctx, chatId, message);
       return;
     }
+  }
+
+  // Also check if there's any pending comment request for this chat (even without reply)
+  const { permissionStore } = await import("../permission-store");
+  const pendingComment = permissionStore.getAwaitingCommentForChat(chatId);
+  if (pendingComment) {
+    await handlePermissionComment(ctx, chatId, message);
+    return;
   }
 
   // 5. Check for interrupt prefix
@@ -174,11 +183,16 @@ async function handlePermissionComment(
   // Find the awaiting_comment request for this chat
   const request = permissionStore.getAwaitingCommentForChat(chatId);
 
-  if (request) {
-    // Resolve the permission with denial + comment
-    resolvePermission(request.request_id, false, comment);
-    await ctx.reply("❌ Permission denied with your reason.");
-  } else {
+  if (!request) {
     await ctx.reply("⚠️ No pending permission request found.");
+    return;
   }
+
+  // Resolve the permission with denial + user's comment
+  // The denial message will be shown to Claude, who should then respond to it
+  resolvePermission(request.request_id, false, `User denied with comment: "${comment}"`);
+
+  // The current turn should continue and Claude will respond to the denial
+  // No need to send a separate message - just acknowledge receipt
+  console.log(`[PERMISSION] Denied with comment: "${comment}"`);
 }

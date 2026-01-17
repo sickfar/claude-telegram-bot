@@ -42,7 +42,10 @@ export interface TokenUsage {
 }
 
 // MCP server configuration types
-export type McpServerConfig = McpStdioConfig | McpHttpConfig;
+export type McpServerConfig =
+  | McpStdioConfig
+  | McpHttpConfig
+  | McpSdkServerConfig;
 
 export interface McpStdioConfig {
   command: string;
@@ -55,6 +58,11 @@ export interface McpHttpConfig {
   url: string;
   headers?: Record<string, string>;
 }
+
+// SDK-based MCP server (in-process)
+export type McpSdkServerConfig = ReturnType<
+  typeof import("@anthropic-ai/claude-agent-sdk").createSdkMcpServer
+>;
 
 // Audit log event types
 export type AuditEventType =

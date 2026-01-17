@@ -54,9 +54,9 @@ Telegram message → Handler → Auth check → Rate limit → Claude session �
 Each message type has a dedicated async handler:
 
 **Command & Message Handlers**
-- **`commands.ts`** - Commands: `/start`, `/new`, `/plan`, `/code`, `/stop`, `/status`, `/project`, `/resume`, `/restart`, `/retry`, `/permissions`
+- **`commands.ts`** - Commands: `/start`, `/new`, `/plan`, `/code`, `/stop`, `/status`, `/project`, `/resume`, `/restart`, `/retry`, `/permissions`, `/thinking`, `/model`, `/voicelocale`
 - **`text.ts`** - Text messages with intent filtering
-- **`voice.ts`** - Voice→text via OpenAI, then same flow as text
+- **`voice.ts`** - Voice→text via Mac Dictation (or OpenAI), auto-translates non-English to English
 
 **Media Handlers**
 - **`photo.ts`** - Image analysis with media group buffering (1s timeout for albums)
@@ -87,7 +87,10 @@ All config via `.env` (copy from `.env.example`). Key variables:
 - `TELEGRAM_BOT_TOKEN`, `TELEGRAM_ALLOWED_USERS` (required)
 - `PROJECTS_ROOT` - Parent directory for all projects (default: home directory)
 - `ALLOWED_PATHS` - Directories Claude can access
-- `OPENAI_API_KEY` - For voice transcription
+- `OPENAI_API_KEY` - For voice transcription (optional, Mac uses local Dictation by default)
+- `MODEL_DEFAULT` - Default Claude model (opus, sonnet, haiku)
+- `THINKING_DEFAULT` - Default extended thinking level (0, 10000, 50000)
+- `VOICE_TRANSLATION_TARGET` - Translation target language for voice (default: en)
 
 MCP servers defined in `mcp-config.ts`.
 

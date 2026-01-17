@@ -204,9 +204,13 @@ export function createStatusCallback(
           state.lastEditTimes.set(segmentId, now);
         }
       } else if (statusType === "segment_end" && segmentId !== undefined) {
-        if (state.textMessages.has(segmentId) && content) {
+        if (!content) return; // No content to send
+
+        const formatted = convertMarkdownToHtml(content);
+
+        if (state.textMessages.has(segmentId)) {
+          // Update existing message
           const msg = state.textMessages.get(segmentId)!;
-          const formatted = convertMarkdownToHtml(content);
 
           // Skip if content unchanged
           if (formatted === state.lastContent.get(segmentId)) {
@@ -242,6 +246,27 @@ export function createStatusCallback(
                   "HTML chunk failed, using plain text:",
                   htmlError
                 );
+                await ctx.reply(chunk);
+              }
+            }
+          }
+        } else {
+          // No message created yet (short response) - create one now
+          if (formatted.length <= TELEGRAM_MESSAGE_LIMIT) {
+            try {
+              await ctx.reply(formatted, { parse_mode: "HTML" });
+            } catch (htmlError) {
+              console.debug("HTML reply failed, using plain text:", htmlError);
+              await ctx.reply(content);
+            }
+          } else {
+            // Split long messages
+            for (let i = 0; i < formatted.length; i += TELEGRAM_SAFE_LIMIT) {
+              const chunk = formatted.slice(i, i + TELEGRAM_SAFE_LIMIT);
+              try {
+                await ctx.reply(chunk, { parse_mode: "HTML" });
+              } catch (htmlError) {
+                console.debug("HTML chunk failed, using plain text:", htmlError);
                 await ctx.reply(chunk);
               }
             }

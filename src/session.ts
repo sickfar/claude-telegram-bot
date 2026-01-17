@@ -283,6 +283,7 @@ class ClaudeSession {
           return {
             behavior: "deny",
             message: `Tool "${getBaseToolName(toolName)}" is blocked in plan mode.`,
+            // NOTE: Do NOT set interrupt: true - it ends the turn before Claude can respond
           };
         }
 
@@ -316,7 +317,11 @@ class ClaudeSession {
               : toolInputStr;
           const [isSafe, reason] = checkCommandSafety(command);
           if (!isSafe) {
-            return { behavior: "deny", message: `Blocked: ${reason}` };
+            return {
+              behavior: "deny",
+              message: `Blocked: ${reason}`,
+              // NOTE: Do NOT set interrupt: true - it ends the turn before Claude can respond
+            };
           }
         }
 

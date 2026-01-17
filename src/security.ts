@@ -23,9 +23,9 @@ class RateLimiter {
   private maxTokens: number;
   private refillRate: number; // tokens per second
 
-  constructor() {
-    this.maxTokens = RATE_LIMIT_REQUESTS;
-    this.refillRate = RATE_LIMIT_REQUESTS / RATE_LIMIT_WINDOW;
+  constructor(maxTokens: number, refillRate: number) {
+    this.maxTokens = maxTokens;
+    this.refillRate = refillRate;
   }
 
   check(userId: number): [allowed: boolean, retryAfter?: number] {
@@ -73,7 +73,23 @@ class RateLimiter {
   }
 }
 
-export const rateLimiter = new RateLimiter();
+// Lazy-initialized to avoid circular dependency issues
+let _rateLimiter: RateLimiter | null = null;
+
+function getRateLimiter(): RateLimiter {
+  if (!_rateLimiter) {
+    _rateLimiter = new RateLimiter(
+      RATE_LIMIT_REQUESTS,
+      RATE_LIMIT_REQUESTS / RATE_LIMIT_WINDOW
+    );
+  }
+  return _rateLimiter;
+}
+
+export const rateLimiter = {
+  check: (userId: number) => getRateLimiter().check(userId),
+  getStatus: (userId: number) => getRateLimiter().getStatus(userId),
+};
 
 // ============== Path Validation ==============
 

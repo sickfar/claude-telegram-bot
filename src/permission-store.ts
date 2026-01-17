@@ -88,6 +88,14 @@ class PermissionStore {
   }
 
   /**
+   * Check if there's a pending permission comment for a specific chat.
+   * Used by sequentialize middleware to bypass queue and prevent deadlock.
+   */
+  isPendingPermissionComment(chatId: number): boolean {
+    return this.getAwaitingCommentForChat(chatId) !== null;
+  }
+
+  /**
    * Update a request's status and optional response.
    */
   update(
@@ -156,6 +164,8 @@ class PermissionStore {
       resolver({
         behavior: "deny",
         message: message || "Permission denied by user",
+        // NOTE: Do NOT set interrupt: true - it causes the turn to end before Claude can respond
+        // Claude will see the denial message and can respond normally
       });
     }
 
@@ -228,3 +238,11 @@ class PermissionStore {
 
 // Export singleton instance
 export const permissionStore = new PermissionStore();
+
+/**
+ * Check if there's a pending permission comment for a specific chat.
+ * Used by sequentialize middleware to bypass queue and prevent deadlock.
+ */
+export function isPendingPermissionComment(chatId: number): boolean {
+  return permissionStore.isPendingPermissionComment(chatId);
+}
