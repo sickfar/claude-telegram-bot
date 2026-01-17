@@ -27,8 +27,10 @@ import {
   getPlanStateFile,
   isExitPlanModeTool,
   isWriteTool,
+  getBaseToolName,
   PlanStateManager,
 } from "./config";
+import { WRITE_TOOLS } from "./plan-mode/constants";
 import type { PlanApprovalAction } from "./plan-mode";
 import { formatToolStatus } from "./formatting";
 import {
@@ -39,6 +41,8 @@ import {
 import {
   createPermissionRequest,
   waitForPermission,
+  loadProjectPermissions,
+  matchesPermission,
 } from "./permissions";
 import { permissionStore } from "./permission-store";
 import { askUserStore } from "./ask-user-store";
@@ -234,9 +238,13 @@ class ClaudeSession {
       ? `${safetyPrompt}\n\n${planModePrompt}`
       : safetyPrompt;
 
-    // In plan mode, always bypass permissions (plan approval is the permission gate)
+    // Check if plan mode is enabled (used for write tool blocking)
     const inPlanMode = this.planStateManager.isEnabled();
-    const shouldBypassPermissions = inPlanMode || getPermissionMode() !== "interactive";
+    // Bypass permissions only if not in plan mode AND permission mode is not interactive
+    // In plan mode, we need the callback to block write tools
+    const permissionMode = getPermissionMode();
+    const shouldBypassPermissions = !inPlanMode && permissionMode !== "interactive";
+    console.log(`[PLAN MODE DEBUG] inPlanMode=${inPlanMode}, permissionMode=${permissionMode}, shouldBypassPermissions=${shouldBypassPermissions}`);
 
     // Build SDK V1 options - supports all features
     const options: Options = {
@@ -246,6 +254,8 @@ class ClaudeSession {
       // Only set permissionMode when bypassing - omit otherwise to allow canUseTool callback
       ...(shouldBypassPermissions && { permissionMode: "bypassPermissions" }),
       allowDangerouslySkipPermissions: shouldBypassPermissions,
+      // In plan mode, block write tools at SDK level
+      ...(inPlanMode && { disallowedTools: [...WRITE_TOOLS] }),
       systemPrompt: systemPrompt,
       mcpServers: MCP_SERVERS,
       maxThinkingTokens: thinkingTokens,
@@ -259,7 +269,16 @@ class ClaudeSession {
       ) => {
         console.log(`[PERMISSION DEBUG] canUseTool invoked for: ${toolName}`);
 
-        // If bypass mode or in plan mode, allow everything
+        // In plan mode, block write tools entirely (check FIRST, before any bypass)
+        if (inPlanMode && isWriteTool(getBaseToolName(toolName))) {
+          console.log(`[PLAN MODE] Blocked write tool: ${toolName}`);
+          return {
+            behavior: "deny",
+            message: `Tool "${getBaseToolName(toolName)}" is blocked in plan mode.`,
+          };
+        }
+
+        // If bypass mode, allow everything (only reached if not blocked above)
         if (shouldBypassPermissions) {
           console.log(`[PERMISSION DEBUG] Bypassing permissions`);
           return { behavior: "allow", updatedInput: toolInput };
@@ -285,6 +304,14 @@ class ClaudeSession {
           if (!isSafe) {
             return { behavior: "deny", message: `Blocked: ${reason}` };
           }
+        }
+
+        // Check stored project permissions (from .claude/settings.local.json)
+        const workingDir = getWorkingDir();
+        const storedPermissions = loadProjectPermissions(workingDir);
+        if (matchesPermission(toolName, toolInput, storedPermissions, workingDir)) {
+          console.log(`[PERMISSION] Auto-allowed by stored rule for: ${toolName}`);
+          return { behavior: "allow", updatedInput: toolInput };
         }
 
         // Format the permission request for display

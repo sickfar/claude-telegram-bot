@@ -378,6 +378,7 @@ export {
   getStateFile as getPlanStateFile,
   isExitPlanModeTool,
   isWriteTool,
+  getBaseToolName,
   PlanStateManager,
 } from "./plan-mode";
 

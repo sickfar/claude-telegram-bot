@@ -45,6 +45,7 @@ export function createAskUserKeyboard(
 export function createPermissionKeyboard(requestId: string): InlineKeyboard {
   const keyboard = new InlineKeyboard();
   keyboard.text("✅ Allow", `perm:${requestId}:allow`).row();
+  keyboard.text("✅ Always Allow", `perm:${requestId}:always`).row();
   keyboard.text("❌ Deny", `perm:${requestId}:deny`).row();
   keyboard.text("💬 Deny with reason", `perm:${requestId}:comment`).row();
   return keyboard;

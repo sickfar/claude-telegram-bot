@@ -17,7 +17,13 @@ import { auditLog, startTypingIndicator } from "../utils";
 import { StreamingState, createStatusCallback } from "./streaming";
 import { askUserStore } from "../ask-user-store";
 import { permissionStore } from "../permission-store";
-import { resolvePermission } from "../permissions";
+import {
+  resolvePermission,
+  generatePermissionPattern,
+  saveProjectPermission,
+  getAlwaysAllowDescription,
+} from "../permissions";
+import { getWorkingDir } from "../config";
 
 /**
  * Handle callback queries from inline keyboards.
@@ -202,6 +208,54 @@ async function handlePermissionCallback(
     resolvePermission(requestId, true);
 
     await ctx.answerCallbackQuery({ text: "✅ Approved" });
+  } else if (action === "always") {
+    // Generate and save permission pattern for this project
+    const workingDir = getWorkingDir();
+    try {
+      const toolInput = JSON.parse(requestData.tool_input);
+      const pattern = generatePermissionPattern(
+        requestData.tool_name,
+        toolInput,
+        workingDir
+      );
+      const description = getAlwaysAllowDescription(
+        requestData.tool_name,
+        toolInput,
+        workingDir
+      );
+
+      // Save to .claude/settings.local.json
+      saveProjectPermission(workingDir, pattern);
+
+      // Extract the command/path preview for the toast
+      // e.g., "Always allow `cargo build`?" -> "cargo build"
+      const previewMatch = description.match(/`([^`]+)`/);
+      const preview = previewMatch ? previewMatch[1] : pattern;
+
+      // Update message to show always-allowed with human-readable description
+      await ctx.editMessageText(
+        `✅ <b>Always Allowed</b>\n\n${description}\n\n<i>Saved: <code>${pattern}</code></i>`,
+        {
+          parse_mode: "HTML",
+        }
+      );
+
+      // Resolve the Promise - this unblocks canUseTool callback
+      resolvePermission(requestId, true);
+
+      await ctx.answerCallbackQuery({ text: `✅ Always: ${preview}` });
+    } catch (error) {
+      console.error("Failed to save permission pattern:", error);
+      // Fall back to single allow
+      await ctx.editMessageText(
+        `✅ <b>Approved</b> (failed to save pattern)\n\n${requestData.formatted_request}`,
+        {
+          parse_mode: "HTML",
+        }
+      );
+      resolvePermission(requestId, true);
+      await ctx.answerCallbackQuery({ text: "✅ Approved (pattern save failed)" });
+    }
   } else if (action === "deny") {
     // Update message to show denial
     await ctx.editMessageText(

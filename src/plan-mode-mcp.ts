@@ -63,27 +63,6 @@ export const planModeMcpServer = createSdkMcpServer({
   version: "1.0.0",
   tools: [
     {
-      name: "EnterPlanMode",
-      description:
-        "Activate plan mode. In plan mode, you can only use Read, Glob, Grep, Bash (read-only), WritePlan, and UpdatePlan tools. Use this to explore the codebase and create an implementation plan before coding.",
-      inputSchema: {},
-      handler: async () => {
-        await ensurePlansDir();
-        const manager = await getPlanStateManager();
-
-        await manager.transition({ type: "ENTER_PLAN_MODE" });
-
-        return {
-          content: [
-            {
-              type: "text" as const,
-              text: "📋 Plan mode activated. You are now in READ-ONLY exploration mode.\n\nAvailable tools: Read, Glob, Grep, Bash (read-only), WritePlan, UpdatePlan, ExitPlanMode\n\nExplore the codebase and create a detailed implementation plan. When done, call ExitPlanMode to present your plan for approval.",
-            },
-          ],
-        };
-      },
-    },
-    {
       name: "WritePlan",
       description:
         "Create a new implementation plan file. The plan is saved to ~/.claude/plans/ with a random 3-word filename. Plan content should be detailed markdown with sections like Overview, Architecture, Implementation Steps, etc.",

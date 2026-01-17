@@ -104,6 +104,21 @@ console.log("Starting bot...");
 const botInfo = await bot.api.getMe();
 console.log(`Bot started: @${botInfo.username}`);
 
+// Register commands for Telegram's command suggestions (when user types /)
+await bot.api.setMyCommands([
+  { command: "new", description: "Start fresh session" },
+  { command: "stop", description: "Stop current query" },
+  { command: "status", description: "Show detailed status" },
+  { command: "plan", description: "Start in planning mode" },
+  { command: "code", description: "Exit plan mode" },
+  { command: "project", description: "Switch project directory" },
+  { command: "resume", description: "Resume last session" },
+  { command: "retry", description: "Retry last message" },
+  { command: "permissions", description: "View/change permission mode" },
+  { command: "model", description: "Switch Claude model" },
+  { command: "restart", description: "Restart the bot" },
+]);
+
 // Initialize storage (ensure directories, migrate old audit logs, cleanup temp files)
 const { runMigrations } = await import("./migrations");
 await runMigrations();
