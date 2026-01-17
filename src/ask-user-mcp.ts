@@ -37,17 +37,36 @@ export const askUserMcpServer = createSdkMcpServer({
         const requestId = crypto.randomUUID().slice(0, 8);
         const chatId = process.env.TELEGRAM_CHAT_ID || "";
 
-        // Direct in-memory call - no file I/O!
-        askUserStore.create(requestId, chatId, question, options);
+        console.log(`[ASK-USER DEBUG] MCP handler creating request with chatId="${chatId}"`);
 
-        return {
-          content: [
-            {
-              type: "text" as const,
-              text: "[Buttons sent to user. STOP HERE - do not output any more text. Wait for user to tap a button.]",
-            },
-          ],
-        };
+        // Create request with promise - this will block until user responds!
+        const answerPromise = askUserStore.createWithPromise(requestId, chatId, question, options);
+
+        // Wait for user to click a button (promise resolves when they do)
+        try {
+          const selectedOption = await answerPromise;
+          console.log(`[ASK-USER DEBUG] User selected: "${selectedOption}"`);
+
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text: `User selected: ${selectedOption}`,
+              },
+            ],
+          };
+        } catch (error) {
+          console.error(`[ASK-USER DEBUG] Error waiting for user response:`, error);
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text: `Error: ${error instanceof Error ? error.message : 'Unknown error'}`,
+              },
+            ],
+            isError: true,
+          };
+        }
       },
     },
   ],

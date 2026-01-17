@@ -34,7 +34,6 @@ import { WRITE_TOOLS } from "./plan-mode/constants";
 import type { PlanApprovalAction } from "./plan-mode";
 import { formatToolStatus } from "./formatting";
 import {
-  checkPendingAskUserRequests,
   displayPermissionRequest,
   formatPermissionRequest,
 } from "./handlers/streaming";
@@ -209,6 +208,33 @@ class ClaudeSession {
     }
     if (this.sessionId) {
       process.env.TELEGRAM_SESSION_ID = this.sessionId;
+    }
+
+    // Register callback to display ask_user buttons immediately when requests are created
+    if (ctx && chatId) {
+      askUserStore.onRequestCreated(async (request) => {
+        console.log(`[ASK-USER DEBUG] onRequestCreated fired for request ${request.request_id}`);
+        try {
+          const { createAskUserKeyboard } = await import("./handlers/streaming");
+          const keyboard = createAskUserKeyboard(request.request_id, request.options);
+          await ctx.reply(`❓ ${request.question}`, { reply_markup: keyboard });
+          console.log(`[ASK-USER DEBUG] Buttons sent for request ${request.request_id}`);
+        } catch (error) {
+          console.error(`[ASK-USER DEBUG] Failed to send buttons:`, error);
+        }
+      });
+
+      // Register callback to display plan approval buttons immediately when created
+      this.planStateManager.onApprovalCreated(async (approval) => {
+        console.log(`[PLAN-APPROVAL DEBUG] onApprovalCreated fired for request ${approval.requestId}`);
+        try {
+          const { displayPlanApproval } = await import("./handlers/plan-approval");
+          await displayPlanApproval(ctx, approval.planFile, approval.planContent, approval.requestId);
+          console.log(`[PLAN-APPROVAL DEBUG] Approval UI displayed for ${approval.requestId}`);
+        } catch (error) {
+          console.error(`[PLAN-APPROVAL DEBUG] Failed to display approval UI:`, error);
+        }
+      });
     }
 
     const isNewSession = !this.isActive;
@@ -394,7 +420,6 @@ class ClaudeSession {
     let currentSegmentText = "";
     let lastTextUpdate = 0;
     let queryCompleted = false;
-    let askUserTriggered = false;
     let planApprovalRequested = false; // Track if ExitPlanMode was called (to block subsequent writes)
 
     try {
@@ -511,49 +536,9 @@ class ClaudeSession {
                 await statusCallback("tool", toolDisplay);
               }
 
-              // Check for pending ask_user requests after ask-user MCP tool
-              // In-process MCP server populates store instantly - no delays needed
-              if (toolName.startsWith("mcp__ask-user") && ctx && chatId) {
-                const buttonsSent = await checkPendingAskUserRequests(ctx, chatId);
-                if (buttonsSent) {
-                  askUserTriggered = true;
-                }
-              }
-
-              // Handle plan approval for ExitPlanMode tool
-              // We handle this directly here since we have access to ctx for UI display
-              // The MCP handler just validates and returns - session.ts displays approval UI
-              if (isExitPlanModeTool(toolName) && ctx && chatId && this.sessionId) {
-                console.log("[PLAN] ExitPlanMode detected, setting up approval flow");
-
-                const state = this.planStateManager.getState();
-                const planFile = state.active_plan_file;
-
-                if (planFile) {
-                  // Read plan content
-                  const planContent = await this.planStateManager.readPlanContent();
-
-                  if (planContent) {
-                    const requestId = crypto.randomUUID().slice(0, 8);
-                    console.log(`[PLAN] Displaying approval for ${planFile}`);
-
-                    // Set up approval state
-                    this.planStateManager.setPendingApproval(planFile, planContent, requestId);
-
-                    // Display approval dialog
-                    const { displayPlanApproval } = await import("./handlers/plan-approval");
-                    await displayPlanApproval(ctx, planFile, planContent, requestId);
-
-                    // Break out of event loop to wait for user
-                    askUserTriggered = true;
-                    console.log("[PLAN] Approval dialog displayed, breaking event loop");
-                  } else {
-                    console.error(`[PLAN] Could not read plan content from ${planFile}`);
-                  }
-                } else {
-                  console.error("[PLAN] No active plan file for ExitPlanMode");
-                }
-              }
+              // Ask-user and ExitPlanMode tools use promise-based flow - no polling needed!
+              // The onRequestCreated/onApprovalCreated callbacks (registered at start of sendMessageStreaming)
+              // handle button display immediately. The MCP handlers block until user responds.
 
               // Permission UI is now displayed directly from canUseTool callback
               // No need to check for pending requests here
@@ -582,11 +567,6 @@ class ClaudeSession {
             }
           }
 
-          // Break out of event loop if ask_user or plan approval was triggered
-          if (askUserTriggered) {
-            console.log("[PLAN] Breaking out of event loop - askUserTriggered=true");
-            break;
-          }
         }
 
         // Result message
@@ -615,7 +595,7 @@ class ClaudeSession {
 
       if (
         isCleanupError &&
-        (queryCompleted || askUserTriggered || this.stopRequested)
+        (queryCompleted || this.stopRequested)
       ) {
         console.warn(`Suppressed post-completion error: ${error}`);
       } else {
@@ -634,13 +614,6 @@ class ClaudeSession {
     this.lastActivity = new Date();
     this.lastError = null;
     this.lastErrorTime = null;
-
-    // If ask_user or plan approval was triggered, return early - user will respond via button
-    if (askUserTriggered) {
-      console.log("[PLAN] Query ended early - waiting for user selection");
-      await statusCallback("done", "");
-      return "[Waiting for user selection]";
-    }
 
     // Emit final segment
     if (currentSegmentText) {
@@ -701,22 +674,13 @@ class ClaudeSession {
   }
 
   /**
-   * Handle plan approval response asynchronously (with state transition).
-   */
-  async handlePlanApprovalAsync(
-    requestId: string,
-    action: PlanApprovalAction
-  ): Promise<[boolean, string, boolean]> {
-    return await this.planStateManager.handleApprovalResponse(requestId, action);
-  }
-
-  /**
-   * Get pending plan approval info (for displaying to user).
+   * Get pending plan approval info (for callback handler).
    */
   getPendingPlanApproval(): {
     planFile: string;
     planContent: string;
     requestId: string;
+    resolve?: (action: PlanApprovalAction) => void;
   } | null {
     const approval = this.planStateManager.getPendingApproval();
     if (!approval) return null;
@@ -724,6 +688,7 @@ class ClaudeSession {
       planFile: approval.planFile,
       planContent: approval.planContent,
       requestId: approval.requestId,
+      resolve: approval.resolve,
     };
   }
 

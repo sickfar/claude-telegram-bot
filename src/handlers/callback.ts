@@ -114,10 +114,19 @@ export async function handleCallback(ctx: Context): Promise<void> {
     text: `Selected: ${selectedOption.slice(0, 50)}`,
   });
 
-  // 7. Delete request from store
-  askUserStore.delete(requestId);
+  // 7. Resolve the promise (if promise-based) - this unblocks the MCP handler
+  console.log(`[ASK-USER DEBUG] Resolving promise for request ${requestId} with option: "${selectedOption}"`);
+  askUserStore.answer(requestId, selectedOption);
 
-  // 8. Send the choice to Claude as a message
+  // Promise-based flow: The MCP tool is still waiting for the answer, so we don't send a new message.
+  // The tool will receive the answer and return it to Claude directly.
+  // Just acknowledge the selection and return early.
+  if (requestData.resolve) {
+    console.log(`[ASK-USER DEBUG] Promise-based flow - returning early`);
+    return;
+  }
+
+  // LEGACY non-promise flow: Send the choice to Claude as a message
   const message = selectedOption;
 
   // Interrupt any running query - button responses are always immediate

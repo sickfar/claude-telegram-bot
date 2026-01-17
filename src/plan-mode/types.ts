@@ -37,6 +37,9 @@ export interface PlanApprovalRequest {
   planContent: string;
   status: "pending" | "accepted" | "rejected" | "cleared";
   createdAt: Date;
+  // Promise-based response mechanism
+  resolve?: (action: PlanApprovalAction) => void;
+  reject?: (error: Error) => void;
 }
 
 /**

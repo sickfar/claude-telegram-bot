@@ -76,21 +76,6 @@ class PermissionStore {
   }
 
   /**
-   * Get all pending requests for a specific chat.
-   */
-  getPendingForChat(chatId: number): PermissionRequest[] {
-    const pending: PermissionRequest[] = [];
-
-    for (const request of this.requests.values()) {
-      if (request.status === "pending" && request.chat_id === chatId) {
-        pending.push(request);
-      }
-    }
-
-    return pending;
-  }
-
-  /**
    * Get request awaiting comment for a specific chat.
    */
   getAwaitingCommentForChat(chatId: number): PermissionRequest | null {

@@ -263,18 +263,75 @@ status: draft
           );
         }
 
-        // Mark approval as pending (session.ts handles the actual UI display)
-        await manager.transition({ type: "REQUEST_APPROVAL", requestId: "" });
+        // Read plan content
+        const planContent = await file.text();
+        const requestId = crypto.randomUUID().slice(0, 8);
 
-        // Return simple confirmation - session.ts displays the approval UI
-        return {
-          content: [
-            {
-              type: "text" as const,
-              text: `[Plan approval requested for ${state.active_plan_file}. Waiting for user response.]`,
-            },
-          ],
-        };
+        console.log(`[PLAN-MCP] Creating approval request for ${state.active_plan_file}`);
+
+        // Mark approval as pending in state
+        await manager.transition({ type: "REQUEST_APPROVAL", requestId });
+
+        // Create approval request with promise - this will BLOCK until user responds!
+        try {
+          const action = await manager.createApprovalWithPromise(
+            state.active_plan_file,
+            planContent,
+            requestId
+          );
+
+          console.log(`[PLAN-MCP] User selected action: ${action}`);
+
+          // Apply the state transition based on action
+          switch (action) {
+            case "accept":
+              await manager.transition({ type: "APPROVE_PLAN" });
+              return {
+                content: [
+                  {
+                    type: "text" as const,
+                    text: `Plan approved. Proceeding with implementation.`,
+                  },
+                ],
+              };
+
+            case "reject":
+              await manager.transition({ type: "REJECT_PLAN" });
+              return {
+                content: [
+                  {
+                    type: "text" as const,
+                    text: `Plan rejected by user. You can refine the plan and try again.`,
+                  },
+                ],
+              };
+
+            case "clear":
+              // Note: Session will be cleared by the callback handler
+              return {
+                content: [
+                  {
+                    type: "text" as const,
+                    text: `Context cleared. Starting fresh session with plan.`,
+                  },
+                ],
+              };
+
+            default:
+              throw new Error(`Unknown approval action: ${action}`);
+          }
+        } catch (error) {
+          console.error(`[PLAN-MCP] Error waiting for approval:`, error);
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text: `Error: ${error instanceof Error ? error.message : 'Unknown error'}`,
+              },
+            ],
+            isError: true,
+          };
+        }
       },
     },
   ],

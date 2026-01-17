@@ -276,29 +276,87 @@ export class PlanStateManager {
 
   // ===== Approval Handling =====
 
+  private onApprovalCreatedCallbacks: Array<(request: PlanApprovalRequest) => void> = [];
+
   /**
-   * Set pending approval request.
+   * Register a callback to be notified when an approval request is created.
+   * Used to immediately display approval buttons to the user.
    */
-  setPendingApproval(
+  onApprovalCreated(callback: (request: PlanApprovalRequest) => void): void {
+    this.onApprovalCreatedCallbacks.push(callback);
+  }
+
+  /**
+   * Create approval request with promise - blocks until user responds.
+   */
+  createApprovalWithPromise(
     planFile: string,
     planContent: string,
     requestId: string
-  ): void {
-    this.pendingApproval = {
-      requestId,
-      planFile,
-      planContent,
-      status: "pending",
-      createdAt: new Date(),
-    };
-    console.log(`[PlanState] Set pending approval: ${requestId}`);
+  ): Promise<PlanApprovalAction> {
+    return new Promise((resolve, reject) => {
+      this.pendingApproval = {
+        requestId,
+        planFile,
+        planContent,
+        status: "pending",
+        createdAt: new Date(),
+        resolve,
+        reject,
+      };
+
+      console.log(`[PlanState] Created approval request: ${requestId} (promise-based)`);
+
+      // Notify listeners to display buttons immediately (before waiting)
+      for (const callback of this.onApprovalCreatedCallbacks) {
+        try {
+          callback(this.pendingApproval);
+        } catch (error) {
+          console.error("Error in onApprovalCreated callback:", error);
+        }
+      }
+
+      // Timeout after 10 minutes
+      setTimeout(() => {
+        if (this.pendingApproval?.requestId === requestId) {
+          this.pendingApproval = null;
+          reject(new Error("Plan approval request timed out after 10 minutes"));
+        }
+      }, 10 * 60 * 1000);
+    });
   }
+
 
   /**
    * Get pending approval request.
    */
   getPendingApproval(): PlanApprovalRequest | null {
     return this.pendingApproval;
+  }
+
+  /**
+   * Answer an approval request (resolves the promise if using promise-based flow).
+   */
+  answerApproval(requestId: string, action: PlanApprovalAction): void {
+    if (!this.pendingApproval) {
+      console.warn(`Cannot answer approval - no pending request`);
+      return;
+    }
+
+    if (this.pendingApproval.requestId !== requestId) {
+      console.warn(`Cannot answer approval - requestId mismatch`);
+      return;
+    }
+
+    // If promise-based, resolve it
+    if (this.pendingApproval.resolve) {
+      this.pendingApproval.resolve(action);
+      console.log(`[PlanState] Resolved approval request ${requestId} with action: ${action}`);
+    }
+
+    // Update status
+    this.pendingApproval.status = action === "accept" ? "accepted" : action === "reject" ? "rejected" : "cleared";
+    this.pendingApproval = null;
   }
 
   /**

@@ -1,7 +1,7 @@
 /**
- * Permission request storage and polling.
+ * Permission request storage and promise-based waiting.
  *
- * Uses in-memory storage with automatic cleanup. Delegates to permissionStore singleton.
+ * Uses in-memory storage with promise-based event handling. Delegates to permissionStore singleton.
  * Also handles persistent project permissions in .claude/settings.local.json.
  */
 

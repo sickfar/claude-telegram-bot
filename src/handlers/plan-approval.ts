@@ -95,111 +95,42 @@ export async function handlePlanApprovalCallback(
   const requestId = parts[1]!;
   const action = parts[2]! as "accept" | "reject" | "clear";
 
-  // Capture approval data BEFORE state transition (which may clear it)
+  // Capture approval data BEFORE resolving (for "clear" action handling)
   const approvalData = session.getPendingPlanApproval();
-  const oldSessionId = session.sessionId;
-
-  // Use async handler to perform state transition
-  const [success, message, shouldContinue] = await session.handlePlanApprovalAsync(
-    requestId,
-    action
-  );
-
-  if (!success) {
-    await ctx.answerCallbackQuery({ text: message });
-    return;
-  }
 
   // Update message to show result
-  await ctx.editMessageText(message, {
+  const messages = {
+    accept: "✅ <b>Plan Approved</b>",
+    reject: "❌ <b>Plan Rejected</b>",
+    clear: "🔄 <b>Context Cleared - Starting Fresh</b>",
+  };
+
+  await ctx.editMessageText(messages[action], {
     parse_mode: "HTML",
   });
 
-  // Handle different actions
-  if (action === "accept") {
-    await ctx.answerCallbackQuery({ text: "✅ Plan approved" });
+  // Answer the callback
+  await ctx.answerCallbackQuery({
+    text: messages[action].replace(/<[^>]*>/g, ""), // Strip HTML tags
+  });
 
-    // Continue with implementation - send message to resume session
-    if (shouldContinue && ctx.chat) {
-      const { StreamingState, createStatusCallback } = await import("./streaming");
-      const { startTypingIndicator } = await import("../utils");
-      const state = new StreamingState();
-      const statusCallback = createStatusCallback(ctx, state);
+  // Resolve the promise - this unblocks the MCP handler
+  console.log(`[PLAN-APPROVAL DEBUG] Resolving promise for request ${requestId} with action: ${action}`);
+  session.planStateManager.answerApproval(requestId, action);
 
-      // Start typing indicator
-      const typing = startTypingIndicator(ctx);
+  // Promise-based flow: The MCP tool will receive the action and handle the response.
+  // For "clear" action, we need to kill the session since that's UI-level logic.
+  if (approvalData?.resolve) {
+    console.log(`[PLAN-APPROVAL DEBUG] Promise-based flow - action: ${action}`);
 
-      try {
-        console.log("[PLAN-APPROVAL] Resuming session for implementation");
-        await session.sendMessageStreaming(
-          "The plan has been approved. Proceed with the implementation as outlined in the plan.",
-          ctx.from?.username || "user",
-          ctx.from?.id || 0,
-          statusCallback,
-          ctx.chat.id,
-          ctx
-        );
-        console.log("[PLAN-APPROVAL] Implementation response received");
-      } catch (e) {
-        console.error("[PLAN-APPROVAL] Error resuming session:", e);
-        await ctx.reply("❌ Error starting implementation. Please try again.");
-      } finally {
-        typing.stop();
-      }
+    if (action === "clear" && ctx.chat) {
+      // Kill session and let MCP handler know context was cleared
+      console.log("[PLAN-APPROVAL] Killing session for context clear");
+      await session.kill();
     }
-  } else if (action === "reject") {
-    await ctx.answerCallbackQuery({ text: "❌ Plan rejected" });
-    // Session continues but plan is discarded
-  } else if (action === "clear") {
-    await ctx.answerCallbackQuery({ text: "🔄 Starting fresh session with plan" });
 
-    // Use pre-captured approval data (captured before state transition cleared it)
-    const planContent = approvalData?.planContent || "";
-
-    // Get the old session log file path
-    const { getClaudeProjectDir } = await import("../session-storage");
-    const projectDir = getClaudeProjectDir();
-    const oldSessionLogFile = oldSessionId ? `${projectDir}/${oldSessionId}.jsonl` : null;
-
-    // Kill the session (clears context)
-    await session.kill();
-    console.log("[PLAN-APPROVAL] Session cleared, starting new session with plan");
-
-    // Start new session with plan context
-    if (shouldContinue && ctx.chat && planContent) {
-      const { StreamingState, createStatusCallback } = await import("./streaming");
-      const { startTypingIndicator } = await import("../utils");
-      const state = new StreamingState();
-      const statusCallback = createStatusCallback(ctx, state);
-
-      // Start typing indicator
-      const typing = startTypingIndicator(ctx);
-
-      // Build the prompt with plan and reference to old session
-      let prompt = `# Implementation Plan\n\nFollow this implementation plan:\n\n---\n${planContent}\n---\n\n`;
-      prompt += `Proceed with implementing this plan step by step.\n\n`;
-
-      if (oldSessionLogFile) {
-        prompt += `If you need any details from the planning discussion, you can reference the previous conversation log at: ${oldSessionLogFile}`;
-      }
-
-      try {
-        console.log("[PLAN-APPROVAL] Starting new session with plan context");
-        await session.sendMessageStreaming(
-          prompt,
-          ctx.from?.username || "user",
-          ctx.from?.id || 0,
-          statusCallback,
-          ctx.chat.id,
-          ctx
-        );
-        console.log("[PLAN-APPROVAL] New session started with plan");
-      } catch (e) {
-        console.error("[PLAN-APPROVAL] Error starting new session:", e);
-        await ctx.reply("❌ Error starting new session. Please try again.");
-      } finally {
-        typing.stop();
-      }
-    }
+    // The MCP handler will receive the action and continue from there
+    return;
   }
+
 }

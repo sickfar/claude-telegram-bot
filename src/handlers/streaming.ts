@@ -111,39 +111,6 @@ export async function displayPermissionRequest(
   }
 }
 
-/**
- * Check for pending ask-user requests and send inline keyboards.
- * With the in-process MCP server, requests are already in the store - no file sync needed.
- */
-export async function checkPendingAskUserRequests(
-  ctx: Context,
-  chatId: number
-): Promise<boolean> {
-  // Get pending requests from store (already populated by in-process MCP server)
-  const pendingRequests = askUserStore.getPendingForChat(chatId);
-  let buttonsSent = false;
-
-  for (const request of pendingRequests) {
-    try {
-      const question = request.question || "Please choose:";
-      const options = request.options || [];
-      const requestId = request.request_id || "";
-
-      if (options.length > 0 && requestId) {
-        const keyboard = createAskUserKeyboard(requestId, options);
-        await ctx.reply(`❓ ${question}`, { reply_markup: keyboard });
-        buttonsSent = true;
-
-        // Mark as sent in store
-        askUserStore.markSent(requestId);
-      }
-    } catch (error) {
-      console.warn(`Failed to send ask-user request ${request.request_id}:`, error);
-    }
-  }
-
-  return buttonsSent;
-}
 
 /**
  * Tracks state for streaming message updates.

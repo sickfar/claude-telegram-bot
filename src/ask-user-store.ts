@@ -10,8 +10,11 @@ export interface AskUserRequest {
   chat_id: string;
   question: string;
   options: string[];
-  status: "pending" | "sent";
+  status: "pending" | "sent" | "answered";
   created_at: string;
+  // Promise-based response mechanism
+  resolve?: (answer: string) => void;
+  reject?: (error: Error) => void;
 }
 
 /**
@@ -19,32 +22,63 @@ export interface AskUserRequest {
  */
 class AskUserStore {
   private requests = new Map<string, AskUserRequest>();
+  private onRequestCreatedCallbacks: Array<(request: AskUserRequest) => void> = [];
 
   constructor() {
     // No automatic cleanup - manual cleanup on new session
   }
 
   /**
-   * Create a new ask-user request.
+   * Register a callback to be notified when a new request is created.
+   * Used to immediately display buttons to the user.
    */
-  create(
+  onRequestCreated(callback: (request: AskUserRequest) => void): void {
+    this.onRequestCreatedCallbacks.push(callback);
+  }
+
+  /**
+   * Create a new ask-user request and return a promise that resolves when user answers.
+   */
+  createWithPromise(
     requestId: string,
     chatId: string,
     question: string,
     options: string[]
-  ): void {
-    const request: AskUserRequest = {
-      request_id: requestId,
-      chat_id: chatId,
-      question,
-      options,
-      status: "pending",
-      created_at: new Date().toISOString(),
-    };
+  ): Promise<string> {
+    return new Promise((resolve, reject) => {
+      const request: AskUserRequest = {
+        request_id: requestId,
+        chat_id: chatId,
+        question,
+        options,
+        status: "pending",
+        created_at: new Date().toISOString(),
+        resolve,
+        reject,
+      };
 
-    this.requests.set(requestId, request);
-    console.log(`Created ask-user request: ${requestId} (in-memory)`);
+      this.requests.set(requestId, request);
+      console.log(`Created ask-user request: ${requestId} (in-memory, promise-based)`);
+
+      // Notify listeners to display buttons immediately (before waiting)
+      for (const callback of this.onRequestCreatedCallbacks) {
+        try {
+          callback(request);
+        } catch (error) {
+          console.error("Error in onRequestCreated callback:", error);
+        }
+      }
+
+      // Timeout after 5 minutes
+      setTimeout(() => {
+        if (this.requests.has(requestId)) {
+          this.delete(requestId);
+          reject(new Error("Ask-user request timed out after 5 minutes"));
+        }
+      }, 5 * 60 * 1000);
+    });
   }
+
 
   /**
    * Get a request by ID.
@@ -53,30 +87,27 @@ class AskUserStore {
     return this.requests.get(requestId) || null;
   }
 
-  /**
-   * Get all pending requests for a specific chat.
-   */
-  getPendingForChat(chatId: number): AskUserRequest[] {
-    const chatIdStr = String(chatId);
-    const pending: AskUserRequest[] = [];
 
-    for (const request of this.requests.values()) {
-      if (request.status === "pending" && request.chat_id === chatIdStr) {
-        pending.push(request);
-      }
-    }
-
-    return pending;
-  }
 
   /**
-   * Mark a request as sent (buttons displayed).
+   * Answer a request (resolves the promise if using promise-based flow).
    */
-  markSent(requestId: string): void {
+  answer(requestId: string, selectedOption: string): void {
     const request = this.requests.get(requestId);
-    if (request) {
-      request.status = "sent";
+    if (!request) {
+      console.warn(`Cannot answer - request ${requestId} not found`);
+      return;
     }
+
+    // If promise-based, resolve it
+    if (request.resolve) {
+      request.resolve(selectedOption);
+      console.log(`Resolved ask-user request ${requestId} with answer: "${selectedOption}"`);
+    }
+
+    // Update status and clean up
+    request.status = "answered";
+    this.delete(requestId);
   }
 
   /**
@@ -100,24 +131,6 @@ class AskUserStore {
     }
   }
 
-  /**
-   * Get store stats (for debugging).
-   */
-  getStats(): { total: number; pending: number; sent: number } {
-    let pending = 0;
-    let sent = 0;
-
-    for (const request of this.requests.values()) {
-      if (request.status === "pending") pending++;
-      if (request.status === "sent") sent++;
-    }
-
-    return {
-      total: this.requests.size,
-      pending,
-      sent,
-    };
-  }
 }
 
 // Export singleton instance
