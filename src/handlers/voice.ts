@@ -125,7 +125,8 @@ export async function handleVoice(ctx: Context): Promise<void> {
       userId,
       statusCallback,
       chatId,
-      ctx
+      ctx,
+      state
     );
 
     // 11. Audit log

@@ -17,6 +17,7 @@ export {
   handleVoiceLocale,
   handlePlan,
   handleCode,
+  handleScreenshot,
 } from "./commands";
 export { handleText } from "./text";
 export { handleVoice } from "./voice";

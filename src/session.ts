@@ -9,6 +9,9 @@ import {
   query,
   type Options,
   type SDKMessage,
+  type HookCallback,
+  type PostToolUseHookInput,
+  type PreCompactHookInput,
 } from "@anthropic-ai/claude-agent-sdk";
 import { readFileSync } from "fs";
 import type { Context } from "grammy";
@@ -36,6 +39,8 @@ import { formatToolStatus } from "./formatting";
 import {
   displayPermissionRequest,
   formatPermissionRequest,
+  StreamingState,
+  updateBashToolMessage,
 } from "./handlers/streaming";
 import {
   createPermissionRequest,
@@ -173,6 +178,7 @@ class ClaudeSession {
    * Send a message to Claude with streaming updates via callback.
    *
    * @param ctx - grammY context for ask_user button display
+   * @param state - StreamingState for tracking tool messages (used by PostToolUse hook)
    */
   async sendMessageStreaming(
     message: string,
@@ -180,7 +186,8 @@ class ClaudeSession {
     userId: number,
     statusCallback: StatusCallback,
     chatId?: number,
-    ctx?: Context
+    ctx?: Context,
+    state?: StreamingState
   ): Promise<string> {
     // Set chat context for ask_user and plan_mode MCP tools
     if (chatId) {
@@ -364,11 +371,60 @@ class ClaudeSession {
         return result;
       },
 
-      // NOTE: Context compaction hooks are commented out due to type compatibility issues
-      // with the Agent SDK. Plan context is preserved via session file and re-injected
-      // on resume instead. This provides equivalent functionality without the hooks API.
-      //
-      // TODO: Revisit hooks when SDK provides clearer type definitions or examples
+      // PostToolUse hook to update Bash tool messages with output
+      hooks: ctx && state ? {
+        PostToolUse: [{
+          hooks: [async (input, toolUseId) => {
+            const hookInput = input as PostToolUseHookInput;
+
+            // Only handle Bash tools
+            if (hookInput.tool_name !== "Bash") {
+              return { continue: true };
+            }
+
+            // Extract command and output from the hook input
+            const toolInput = hookInput.tool_input as Record<string, unknown>;
+            const command = String(toolInput.command || "");
+            const toolResponse = hookInput.tool_response as { stdout?: string; stderr?: string; exitCode?: number } | string;
+
+            // Handle different response formats
+            let output = "";
+            let isError = false;
+
+            if (typeof toolResponse === "string") {
+              output = toolResponse;
+              isError = false;
+            } else if (toolResponse) {
+              // Check for error (non-zero exit code or stderr)
+              isError = (toolResponse.exitCode !== undefined && toolResponse.exitCode !== 0) ||
+                        (!!toolResponse.stderr && !toolResponse.stdout);
+              output = isError ? (toolResponse.stderr || "") : (toolResponse.stdout || "");
+            }
+
+            // Update the Telegram message
+            if (toolUseId) {
+              await updateBashToolMessage(ctx!, state!, toolUseId, command, output, isError);
+            }
+
+            return { continue: true };
+          }] as HookCallback[],
+        }],
+        PreCompact: [{
+          hooks: [async (input) => {
+            const hookInput = input as PreCompactHookInput;
+            console.log(`[COMPACTION] Pre-compaction triggered: ${hookInput.trigger}`);
+
+            // Send notification to Telegram
+            try {
+              await ctx.reply("Compacting conversation...");
+            } catch (error) {
+              console.warn(`[COMPACTION] Failed to send notification:`, error);
+            }
+
+            return { continue: true };
+          }] as HookCallback[],
+        }],
+      } : undefined,
     };
 
     // Add Claude Code executable path if set (required for standalone builds)
@@ -460,6 +516,7 @@ class ClaudeSession {
             if (block.type === "tool_use") {
               const toolName = block.name;
               const toolInput = block.input as Record<string, unknown>;
+              const toolUseId = block.id;
 
               // Check for ExitPlanMode - set flag to prevent subsequent modifications
               if (isExitPlanModeTool(toolName)) {
@@ -526,7 +583,7 @@ class ClaudeSession {
 
               // Don't show tool status for ask_user - the buttons are self-explanatory
               if (!toolName.startsWith("mcp__ask-user")) {
-                await statusCallback("tool", toolDisplay);
+                await statusCallback("tool", toolDisplay, undefined, toolUseId);
               }
 
               // Ask-user and ExitPlanMode tools use promise-based flow - no polling needed!

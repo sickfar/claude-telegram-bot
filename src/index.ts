@@ -23,6 +23,7 @@ import {
   handleVoiceLocale,
   handlePlan,
   handleCode,
+  handleScreenshot,
   handleText,
   handleVoice,
   handlePhoto,
@@ -83,6 +84,7 @@ bot.command("thinking", handleThinking);
 bot.command("voicelocale", handleVoiceLocale);
 bot.command("plan", handlePlan);
 bot.command("code", handleCode);
+bot.command("screenshot", handleScreenshot);
 
 // ============== Message Handlers ==============
 
@@ -135,6 +137,7 @@ await bot.api.setMyCommands([
   { command: "model", description: "Switch Claude model" },
   { command: "thinking", description: "Toggle extended thinking" },
   { command: "voicelocale", description: "Set voice recognition locale" },
+  { command: "screenshot", description: "Take a screenshot of a window" },
   { command: "restart", description: "Restart the bot" },
 ]);
 

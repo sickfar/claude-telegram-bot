@@ -225,11 +225,8 @@ export function formatToolStatus(
 
   if (toolName === "Bash") {
     const cmd = String(toolInput.command || "");
-    const desc = String(toolInput.description || "");
-    if (desc) {
-      return `${emoji} ${escapeHtml(desc)}`;
-    }
-    return `${emoji} ${code(truncate(cmd, 50))}`;
+    // Always show command in code block (no truncation for running state)
+    return `${emoji} Running:\n${code(cmd)}`;
   }
 
   if (toolName === "Grep") {
@@ -306,4 +303,33 @@ export function formatToolStatus(
   }
 
   return `${emoji} ${escapeHtml(toolName)}`;
+}
+
+/**
+ * Format completed Bash tool with output.
+ * Shows success/failure status, command, and last N lines of output.
+ */
+export function formatBashComplete(
+  command: string,
+  output: string,
+  isError: boolean,
+  maxLines = 5
+): string {
+  const emoji = isError ? "❌" : "✅";
+  const status = isError ? "Failed" : "Completed";
+
+  // Get last N lines of output
+  const lines = output.trim().split("\n");
+  const lastLines = lines.slice(-maxLines);
+  const outputText = lastLines.join("\n");
+
+  // Build the message
+  let message = `${emoji} ${status}:\n${code(command)}`;
+
+  if (outputText) {
+    const label = isError ? "Error" : "Output";
+    message += `\n\n${label} (last ${Math.min(lines.length, maxLines)} lines):\n<pre>${escapeHtml(outputText)}</pre>`;
+  }
+
+  return message;
 }

@@ -86,12 +86,13 @@ async function processPhotos(
       userId,
       statusCallback,
       chatId,
-      ctx
+      ctx,
+      state
     );
 
     await auditLog(userId, username, "PHOTO", prompt, response);
   } catch (error) {
-    await handleProcessingError(ctx, error, state.toolMessages);
+    await handleProcessingError(ctx, error, [...state.toolMessages.values()]);
   } finally {
     stopProcessing();
     typing.stop();

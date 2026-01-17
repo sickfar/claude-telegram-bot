@@ -260,7 +260,8 @@ async function processArchive(
       userId,
       statusCallback,
       chatId,
-      ctx
+      ctx,
+      state
     );
 
     await auditLog(
@@ -341,7 +342,8 @@ async function processDocuments(
       userId,
       statusCallback,
       chatId,
-      ctx
+      ctx,
+      state
     );
 
     await auditLog(
@@ -352,7 +354,7 @@ async function processDocuments(
       response
     );
   } catch (error) {
-    await handleProcessingError(ctx, error, state.toolMessages);
+    await handleProcessingError(ctx, error, [...state.toolMessages.values()]);
   } finally {
     stopProcessing();
     typing.stop();

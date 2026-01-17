@@ -19,6 +19,7 @@
     "@grammyjs/runner": "^2.0.3",
     "@modelcontextprotocol/sdk": "^1.25.2",
     "grammy": "^1.38.4",
+    "node-screenshots": "^0.2.1",
     "openai": "^6.16.0",
     "zod": "^4.2.1"
   }

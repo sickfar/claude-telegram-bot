@@ -80,6 +80,12 @@ export async function handleCallback(ctx: Context): Promise<void> {
       return;
     }
 
+    // Check for screenshot callback
+    if (callbackData.startsWith("screenshot:")) {
+      await handleScreenshotCallback(ctx, callbackData, chatId);
+      return;
+    }
+
     await ctx.answerCallbackQuery();
     return;
   }
@@ -177,14 +183,15 @@ export async function handleCallback(ctx: Context): Promise<void> {
       userId,
       statusCallback,
       chatId,
-      ctx
+      ctx,
+      state
     );
 
     await auditLog(userId, username, "CALLBACK", message, response);
   } catch (error) {
     console.error("Error processing callback:", error);
 
-    for (const toolMsg of state.toolMessages) {
+    for (const toolMsg of state.toolMessages.values()) {
       try {
         await ctx.api.deleteMessage(toolMsg.chat.id, toolMsg.message_id);
       } catch (error) {
@@ -491,5 +498,140 @@ async function handleResumeCallback(
   } else {
     await ctx.editMessageText(`❌ ${resumeMessage}`, { parse_mode: "HTML" });
     await ctx.answerCallbackQuery({ text: "Failed to resume" });
+  }
+}
+
+/**
+ * Handle screenshot window selection callback.
+ */
+async function handleScreenshotCallback(
+  ctx: Context,
+  callbackData: string,
+  chatId: number
+): Promise<void> {
+  // Parse: screenshot:{requestId}:{index|cancel}
+  const parts = callbackData.split(":");
+  if (parts.length !== 3) {
+    await ctx.answerCallbackQuery({ text: "Invalid callback data" });
+    return;
+  }
+
+  const requestId = parts[1]!;
+  const indexOrCancel = parts[2]!;
+
+  // Handle cancel
+  if (indexOrCancel === "cancel") {
+    try {
+      await ctx.deleteMessage();
+    } catch {}
+    await ctx.answerCallbackQuery({ text: "Cancelled" });
+
+    // Clean up store
+    const { removeRequest } = await import("../screenshot-store");
+    removeRequest(requestId);
+    return;
+  }
+
+  // Handle whole screen capture
+  if (indexOrCancel === "screen") {
+    await ctx.answerCallbackQuery({ text: "Capturing screen..." });
+
+    try {
+      const { Monitor } = await import("node-screenshots");
+      const { removeRequest } = await import("../screenshot-store");
+
+      // Get primary monitor
+      const monitors = Monitor.all();
+      const primaryMonitor = monitors.find((m) => m.isPrimary) || monitors[0];
+
+      if (!primaryMonitor) {
+        await ctx.reply("No monitor found.");
+        return;
+      }
+
+      // Capture the screen
+      const image = await primaryMonitor.captureImage();
+      const buffer = image.toPngSync();
+
+      // Send as photo
+      const { InputFile } = await import("grammy");
+      await ctx.replyWithPhoto(new InputFile(buffer, "screenshot.png"), {
+        caption: `Screenshot: ${primaryMonitor.name || "Whole Screen"}`,
+      });
+
+      // Delete the selection message
+      try {
+        await ctx.deleteMessage();
+      } catch {}
+
+      // Clean up store
+      removeRequest(requestId);
+    } catch (error) {
+      console.error("Screen capture error:", error);
+      await ctx.reply(
+        "Failed to capture screen. Check Screen Recording permissions in System Settings > Privacy & Security."
+      );
+    }
+    return;
+  }
+
+  const index = parseInt(indexOrCancel, 10);
+  if (isNaN(index)) {
+    await ctx.answerCallbackQuery({ text: "Invalid index" });
+    return;
+  }
+
+  // Get windows from store
+  const { getWindows, removeRequest } = await import("../screenshot-store");
+  const windows = getWindows(requestId);
+
+  if (!windows) {
+    await ctx.answerCallbackQuery({ text: "Request expired" });
+    try {
+      await ctx.deleteMessage();
+    } catch {}
+    return;
+  }
+
+  if (index < 0 || index >= windows.length) {
+    await ctx.answerCallbackQuery({ text: "Invalid window index" });
+    return;
+  }
+
+  const targetWindow = windows[index]!;
+
+  // Show capturing status
+  await ctx.answerCallbackQuery({ text: `Capturing ${targetWindow.title.slice(0, 30)}...` });
+
+  try {
+    // Capture the window (async)
+    const image = await targetWindow.captureImage();
+
+    if (!image) {
+      await ctx.reply("Failed to capture window. It may have been closed.");
+      return;
+    }
+
+    // Convert to PNG buffer (sync for simplicity)
+    const buffer = image.toPngSync();
+
+    // Send as photo
+    const { InputFile } = await import("grammy");
+    await ctx.replyWithPhoto(new InputFile(buffer, "screenshot.png"), {
+      caption: `Screenshot: ${targetWindow.title}`,
+    });
+
+    // Delete the selection message
+    try {
+      await ctx.deleteMessage();
+    } catch {}
+
+    // Clean up store
+    removeRequest(requestId);
+  } catch (error) {
+    console.error("Screenshot capture error:", error);
+    await ctx.reply(
+      "Failed to capture screenshot. Check Screen Recording permissions in System Settings > Privacy & Security."
+    );
   }
 }

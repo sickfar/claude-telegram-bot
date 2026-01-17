@@ -114,7 +114,8 @@ export async function handleText(ctx: Context): Promise<void> {
         userId,
         statusCallback,
         chatId,
-        ctx
+        ctx,
+        state
       );
 
       // 10. Audit log
@@ -125,7 +126,7 @@ export async function handleText(ctx: Context): Promise<void> {
       const isClaudeCodeCrash = errorStr.includes("exited with code");
 
       // Clean up any partial messages from this attempt
-      for (const toolMsg of state.toolMessages) {
+      for (const toolMsg of state.toolMessages.values()) {
         try {
           await ctx.api.deleteMessage(toolMsg.chat.id, toolMsg.message_id);
         } catch {

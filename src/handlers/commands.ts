@@ -70,6 +70,7 @@ export async function handleStart(ctx: Context): Promise<void> {
       `/model - Switch Claude model\n` +
       `/thinking - Toggle extended thinking\n` +
       `/voicelocale - Set voice recognition locale\n` +
+      `/screenshot - Take a window screenshot\n` +
       `/restart - Restart the bot\n\n` +
       `<b>Tips:</b>\n` +
       `• Prefix with <code>!</code> to interrupt current query\n` +
@@ -830,7 +831,8 @@ export async function handlePlan(ctx: Context): Promise<void> {
         userId!,
         statusCallback,
         chatId,
-        ctx
+        ctx,
+        streamingState
       );
 
       auditLog(userId!, username, "PLAN", message, response);
@@ -840,7 +842,7 @@ export async function handlePlan(ctx: Context): Promise<void> {
       const isClaudeCodeCrash = errorStr.includes("exited with code");
 
       // Clean up any partial messages
-      for (const toolMsg of streamingState.toolMessages) {
+      for (const toolMsg of streamingState.toolMessages.values()) {
         try {
           await ctx.api.deleteMessage(toolMsg.chat.id, toolMsg.message_id);
         } catch {}
@@ -911,4 +913,60 @@ export async function handleCode(ctx: Context): Promise<void> {
       parse_mode: "HTML",
     }
   );
+}
+
+/**
+ * /screenshot - List open windows and capture screenshot of selected one.
+ */
+export async function handleScreenshot(ctx: Context): Promise<void> {
+  const userId = ctx.from?.id;
+
+  if (!isAuthorized(userId, ALLOWED_USERS)) {
+    await ctx.reply("Unauthorized.");
+    return;
+  }
+
+  try {
+    // Dynamic import to avoid loading at startup
+    const { Window } = await import("node-screenshots");
+    const { generateRequestId, storeWindows } = await import("../screenshot-store");
+
+    // Get all windows with non-empty titles
+    const allWindows = Window.all().filter((win) => win.title.length > 0);
+
+    if (allWindows.length === 0) {
+      await ctx.reply("No active windows found.");
+      return;
+    }
+
+    // Generate unique request ID and store windows
+    const requestId = generateRequestId();
+    storeWindows(requestId, allWindows);
+
+    // Create inline keyboard with window buttons
+    const keyboard = new InlineKeyboard();
+
+    // Add "Whole Screen" option at the top
+    keyboard.text("🖥 Whole Screen", `screenshot:${requestId}:screen`).row();
+
+    for (let i = 0; i < allWindows.length && i < 50; i++) {
+      const win = allWindows[i]!;
+      const title = win.title;
+      // Truncate to fit Telegram button limits (~64 bytes)
+      const label = title.length > 40 ? title.slice(0, 37) + "..." : title;
+      keyboard.text(label, `screenshot:${requestId}:${i}`).row();
+    }
+
+    // Add cancel button
+    keyboard.text("Cancel", `screenshot:${requestId}:cancel`);
+
+    await ctx.reply("Select a window to capture:", {
+      reply_markup: keyboard,
+    });
+  } catch (error) {
+    console.error("Screenshot command error:", error);
+    await ctx.reply(
+      "Failed to get window list. Check Screen Recording permissions in System Settings > Privacy & Security."
+    );
+  }
 }

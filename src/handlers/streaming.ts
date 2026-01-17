@@ -8,7 +8,7 @@ import type { Context } from "grammy";
 import type { Message } from "grammy/types";
 import { InlineKeyboard } from "grammy";
 import type { StatusCallback } from "../types";
-import { convertMarkdownToHtml, escapeHtml } from "../formatting";
+import { convertMarkdownToHtml, escapeHtml, formatBashComplete } from "../formatting";
 import {
   TELEGRAM_MESSAGE_LIMIT,
   TELEGRAM_SAFE_LIMIT,
@@ -117,7 +117,7 @@ export async function displayPermissionRequest(
  */
 export class StreamingState {
   textMessages = new Map<number, Message>(); // segment_id -> telegram message
-  toolMessages: Message[] = []; // ephemeral tool status messages
+  toolMessages = new Map<string, Message>(); // tool_use_id -> telegram message
   lastEditTimes = new Map<number, number>(); // segment_id -> last edit time
   lastContent = new Map<number, string>(); // segment_id -> last sent content
 }
@@ -129,7 +129,7 @@ export function createStatusCallback(
   ctx: Context,
   state: StreamingState
 ): StatusCallback {
-  return async (statusType: string, content: string, segmentId?: number) => {
+  return async (statusType: string, content: string, segmentId?: number, toolUseId?: string) => {
     try {
       if (statusType === "thinking") {
         // Show thinking inline, compact (first 500 chars)
@@ -139,10 +139,14 @@ export function createStatusCallback(
         const thinkingMsg = await ctx.reply(`🧠 <pre>${escaped}</pre>`, {
           parse_mode: "HTML",
         });
-        state.toolMessages.push(thinkingMsg);
+        // Use random ID for thinking messages (they don't have tool_use_id)
+        const thinkingId = `thinking_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+        state.toolMessages.set(thinkingId, thinkingMsg);
       } else if (statusType === "tool") {
         const toolMsg = await ctx.reply(content, { parse_mode: "HTML" });
-        state.toolMessages.push(toolMsg);
+        // Use toolUseId if provided, otherwise generate a random one
+        const id = toolUseId || `tool_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+        state.toolMessages.set(id, toolMsg);
       } else if (statusType === "text" && segmentId !== undefined) {
         const now = Date.now();
         const lastEdit = state.lastEditTimes.get(segmentId) || 0;
@@ -274,16 +278,49 @@ export function createStatusCallback(
         }
       } else if (statusType === "done") {
         // Delete tool messages - text messages stay
-        for (const toolMsg of state.toolMessages) {
+        for (const toolMsg of state.toolMessages.values()) {
           try {
             await ctx.api.deleteMessage(toolMsg.chat.id, toolMsg.message_id);
           } catch (error) {
             console.debug("Failed to delete tool message:", error);
           }
         }
+        state.toolMessages.clear();
       }
     } catch (error) {
       console.error("Status callback error:", error);
     }
   };
+}
+
+/**
+ * Update a Bash tool message with completion status and output.
+ * Called from PostToolUse hook when a Bash command completes.
+ */
+export async function updateBashToolMessage(
+  ctx: Context,
+  state: StreamingState,
+  toolUseId: string,
+  command: string,
+  output: string,
+  isError: boolean
+): Promise<void> {
+  const toolMsg = state.toolMessages.get(toolUseId);
+  if (!toolMsg) {
+    console.debug(`No tool message found for ${toolUseId}`);
+    return;
+  }
+
+  const formatted = formatBashComplete(command, output, isError);
+
+  try {
+    await ctx.api.editMessageText(
+      toolMsg.chat.id,
+      toolMsg.message_id,
+      formatted,
+      { parse_mode: "HTML" }
+    );
+  } catch (error) {
+    console.debug("Failed to update Bash tool message:", error);
+  }
 }
