@@ -280,10 +280,10 @@ status: draft
             requestId
           );
 
-          console.log(`[PLAN-MCP] User selected action: ${action}`);
+          console.log(`[PLAN-MCP] User selected action: ${JSON.stringify(action)}`);
 
           // Apply the state transition based on action
-          switch (action) {
+          switch (action.type) {
             case "accept":
               await manager.transition({ type: "APPROVE_PLAN" });
               return {
@@ -297,11 +297,14 @@ status: draft
 
             case "reject":
               await manager.transition({ type: "REJECT_PLAN" });
+              const feedback = action.commentary
+                ? `\n\nUser feedback:\n${action.commentary}`
+                : " You can refine the plan and try again.";
               return {
                 content: [
                   {
                     type: "text" as const,
-                    text: `Plan rejected by user. You can refine the plan and try again.`,
+                    text: `Plan rejected by user.${feedback}`,
                   },
                 ],
               };

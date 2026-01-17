@@ -276,45 +276,60 @@ export class PlanStateManager {
 
   // ===== Approval Handling =====
 
-  private onApprovalCreatedCallbacks: Array<(request: PlanApprovalRequest) => void> = [];
+  private displayApprovalFn?: (planFile: string, planContent: string, requestId: string) => Promise<void>;
 
   /**
-   * Register a callback to be notified when an approval request is created.
-   * Used to immediately display approval buttons to the user.
+   * Set the function to display approval UI.
+   * This function will be called when an approval request is created.
    */
-  onApprovalCreated(callback: (request: PlanApprovalRequest) => void): void {
-    this.onApprovalCreatedCallbacks.push(callback);
+  setDisplayApprovalFn(fn: (planFile: string, planContent: string, requestId: string) => Promise<void>): void {
+    this.displayApprovalFn = fn;
   }
 
   /**
    * Create approval request with promise - blocks until user responds.
    */
-  createApprovalWithPromise(
+  async createApprovalWithPromise(
     planFile: string,
     planContent: string,
     requestId: string
   ): Promise<PlanApprovalAction> {
-    return new Promise((resolve, reject) => {
-      this.pendingApproval = {
-        requestId,
-        planFile,
-        planContent,
-        status: "pending",
-        createdAt: new Date(),
-        resolve,
-        reject,
-      };
+    this.pendingApproval = {
+      requestId,
+      planFile,
+      planContent,
+      status: "pending",
+      createdAt: new Date(),
+      resolve: null as any, // Will be set below
+      reject: null as any,
+    };
 
-      console.log(`[PlanState] Created approval request: ${requestId} (promise-based)`);
+    console.log(`[PlanState] Created approval request: ${requestId} (promise-based)`);
 
-      // Notify listeners to display buttons immediately (before waiting)
-      for (const callback of this.onApprovalCreatedCallbacks) {
-        try {
-          callback(this.pendingApproval);
-        } catch (error) {
-          console.error("Error in onApprovalCreated callback:", error);
-        }
+    // Display the approval UI immediately and AWAIT it (critical!)
+    if (this.displayApprovalFn) {
+      console.log(`[PlanState] Displaying approval UI for ${requestId}...`);
+      try {
+        await this.displayApprovalFn(planFile, planContent, requestId);
+        console.log(`[PlanState] Approval UI displayed successfully`);
+      } catch (error) {
+        console.error("Error displaying plan approval UI:", error);
+        throw error;
       }
+    } else {
+      console.warn(`[PlanState] No display function set - approval UI will not be shown!`);
+      throw new Error("No display function configured for plan approval");
+    }
+
+    // Now wait for user response
+    return new Promise((resolve, reject) => {
+      if (!this.pendingApproval) {
+        reject(new Error("Pending approval was unexpectedly cleared"));
+        return;
+      }
+
+      this.pendingApproval.resolve = resolve;
+      this.pendingApproval.reject = reject;
 
       // Timeout after 10 minutes
       setTimeout(() => {
@@ -355,7 +370,7 @@ export class PlanStateManager {
     }
 
     // Update status
-    this.pendingApproval.status = action === "accept" ? "accepted" : action === "reject" ? "rejected" : "cleared";
+    this.pendingApproval.status = action.type === "accept" ? "accepted" : action.type === "reject" ? "rejected" : "cleared";
     this.pendingApproval = null;
   }
 
@@ -377,7 +392,7 @@ export class PlanStateManager {
 
     const planFile = this.pendingApproval.planFile;
 
-    switch (action) {
+    switch (action.type) {
       case "accept":
         this.pendingApproval.status = "accepted";
         this.pendingApproval = null;

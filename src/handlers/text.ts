@@ -33,7 +33,24 @@ export async function handleText(ctx: Context): Promise<void> {
     return;
   }
 
-  // 2. Check if this is a reply to a permission comment request
+  // 2. Check if this is custom input for ask-user "Other" option
+  console.log(`[TEXT] Checking for custom input: chatId=${chatId}, message="${message.substring(0, 30)}..."`);
+  const { handleCustomInput } = await import("./ask-user-other");
+  if (handleCustomInput(chatId, message)) {
+    console.log(`[TEXT] Custom input handled, replying to user`);
+    await ctx.reply("✅ Custom input received. Processing...");
+    return;
+  }
+  console.log(`[TEXT] Not custom input, continuing...`);
+
+  // 3. Check if this is commentary input for plan rejection
+  const { handleCommentaryInput } = await import("./plan-approval");
+  if (handleCommentaryInput(chatId, message)) {
+    await ctx.reply("✅ Commentary received. Processing your feedback...");
+    return;
+  }
+
+  // 4. Check if this is a reply to a permission comment request
   if (ctx.message?.reply_to_message) {
     const replyText = ctx.message.reply_to_message.text || "";
     if (replyText.includes("Please provide a reason for denial:")) {
@@ -42,13 +59,13 @@ export async function handleText(ctx: Context): Promise<void> {
     }
   }
 
-  // 3. Check for interrupt prefix
+  // 5. Check for interrupt prefix
   message = await checkInterrupt(message);
   if (!message.trim()) {
     return;
   }
 
-  // 4. Rate limit check
+  // 6. Rate limit check
   const [allowed, retryAfter] = rateLimiter.check(userId);
   if (!allowed) {
     await auditLogRateLimit(userId, username, retryAfter!);

@@ -27,6 +27,8 @@ import {
   handleDocument,
   handleCallback,
 } from "./handlers";
+import { isPendingCustomInput } from "./handlers/ask-user-other";
+import { isPendingCommentary } from "./handlers/plan-approval";
 
 // Create bot instance
 const bot = new Bot(TELEGRAM_TOKEN);
@@ -47,6 +49,16 @@ bot.use(
     if (ctx.callbackQuery) {
       return undefined;
     }
+
+    // Text messages that are responses to ask-user "Other" or plan rejection should NOT be sequentialized
+    // Otherwise they create a deadlock (the ask/plan tool is waiting, but the text is queued)
+    if (ctx.message?.text && ctx.chat?.id) {
+      if (isPendingCustomInput(ctx.chat.id) || isPendingCommentary(ctx.chat.id)) {
+        console.log(`[SEQUENTIALIZE] Bypassing queue for custom input/commentary response`);
+        return undefined; // Don't sequentialize
+      }
+    }
+
     // Other messages are sequentialized per chat
     return ctx.chat?.id.toString();
   })

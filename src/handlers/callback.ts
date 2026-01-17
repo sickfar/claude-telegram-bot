@@ -102,19 +102,37 @@ export async function handleCallback(ctx: Context): Promise<void> {
 
   const selectedOption = requestData.options[optionIndex]!;
 
-  // 5. Update the message to show selection
+  // 5. If "Other" is selected, prompt for custom text input
+  if (selectedOption === "Other") {
+    console.log(`[CALLBACK] "Other" selected for request ${requestId}, chatId=${chatId}`);
+    const { setPendingCustomInput } = await import("./ask-user-other");
+    setPendingCustomInput(requestId, chatId);
+
+    await ctx.editMessageText(`💬 <b>Custom Input</b>\n\nPlease send your custom response as a text message:`, {
+      parse_mode: "HTML",
+    });
+
+    await ctx.answerCallbackQuery({
+      text: "Send your custom response as a text message",
+    });
+
+    console.log(`[CALLBACK] Waiting for custom text input for ${requestId}`);
+    return; // Don't resolve yet - wait for text input
+  }
+
+  // 6. Update the message to show selection
   try {
     await ctx.editMessageText(`✓ ${selectedOption}`);
   } catch (error) {
     console.debug("Failed to edit callback message:", error);
   }
 
-  // 6. Answer the callback
+  // 7. Answer the callback
   await ctx.answerCallbackQuery({
     text: `Selected: ${selectedOption.slice(0, 50)}`,
   });
 
-  // 7. Resolve the promise (if promise-based) - this unblocks the MCP handler
+  // 8. Resolve the promise (if promise-based) - this unblocks the MCP handler
   console.log(`[ASK-USER DEBUG] Resolving promise for request ${requestId} with option: "${selectedOption}"`);
   askUserStore.answer(requestId, selectedOption);
 

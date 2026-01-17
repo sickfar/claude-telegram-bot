@@ -67,7 +67,10 @@ export type PlanStateTransition =
 /**
  * Approval action from user button click
  */
-export type PlanApprovalAction = "accept" | "reject" | "clear";
+export type PlanApprovalAction =
+  | { type: "accept" }
+  | { type: "reject"; commentary?: string }
+  | { type: "clear" };
 
 /**
  * Create default empty state

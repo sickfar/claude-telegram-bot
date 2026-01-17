@@ -78,6 +78,36 @@ export async function displayPlanApproval(
   }
 }
 
+// State to track pending commentary input
+let pendingCommentary: { requestId: string; chatId: number } | null = null;
+
+/**
+ * Check if we're waiting for commentary from a specific chat (used for sequentialize bypass).
+ */
+export function isPendingCommentary(chatId: number): boolean {
+  return pendingCommentary !== null && pendingCommentary.chatId === chatId;
+}
+
+/**
+ * Check if we're waiting for commentary input and handle it.
+ * Called from text handler.
+ */
+export function handleCommentaryInput(chatId: number, text: string): boolean {
+  if (!pendingCommentary || pendingCommentary.chatId !== chatId) {
+    return false; // Not waiting for commentary
+  }
+
+  const { requestId } = pendingCommentary;
+  pendingCommentary = null; // Clear state
+
+  console.log(`[PLAN-APPROVAL] Received commentary for ${requestId}: ${text.substring(0, 50)}...`);
+
+  // Resolve the approval with commentary
+  session.planStateManager.answerApproval(requestId, { type: "reject", commentary: text });
+
+  return true; // Handled
+}
+
 /**
  * Handle plan approval callback using PlanStateManager.
  */
@@ -98,10 +128,24 @@ export async function handlePlanApprovalCallback(
   // Capture approval data BEFORE resolving (for "clear" action handling)
   const approvalData = session.getPendingPlanApproval();
 
-  // Update message to show result
+  // For "reject", ask for commentary first
+  if (action === "reject") {
+    pendingCommentary = { requestId, chatId };
+
+    await ctx.editMessageText("❌ <b>Plan Rejected</b>\n\nPlease send your commentary/feedback:", {
+      parse_mode: "HTML",
+    });
+
+    await ctx.answerCallbackQuery({
+      text: "Send your commentary as a text message",
+    });
+
+    return; // Don't resolve yet - wait for text input
+  }
+
+  // For "accept" and "clear", proceed immediately
   const messages = {
     accept: "✅ <b>Plan Approved</b>",
-    reject: "❌ <b>Plan Rejected</b>",
     clear: "🔄 <b>Context Cleared - Starting Fresh</b>",
   };
 
@@ -116,7 +160,8 @@ export async function handlePlanApprovalCallback(
 
   // Resolve the promise - this unblocks the MCP handler
   console.log(`[PLAN-APPROVAL DEBUG] Resolving promise for request ${requestId} with action: ${action}`);
-  session.planStateManager.answerApproval(requestId, action);
+  const approvalAction = action === "accept" ? { type: "accept" as const } : { type: "clear" as const };
+  session.planStateManager.answerApproval(requestId, approvalAction);
 
   // Promise-based flow: The MCP tool will receive the action and handle the response.
   // For "clear" action, we need to kill the session since that's UI-level logic.

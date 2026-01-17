@@ -210,29 +210,18 @@ class ClaudeSession {
       process.env.TELEGRAM_SESSION_ID = this.sessionId;
     }
 
-    // Register callback to display ask_user buttons immediately when requests are created
+    // Set ask-user display function - called synchronously when ask_user is invoked
     if (ctx && chatId) {
-      askUserStore.onRequestCreated(async (request) => {
-        console.log(`[ASK-USER DEBUG] onRequestCreated fired for request ${request.request_id}`);
+      askUserStore.setDisplayFn(async (question, options, requestId) => {
+        console.log(`[ASK-USER] Displaying UI for ${requestId}`);
         try {
           const { createAskUserKeyboard } = await import("./handlers/streaming");
-          const keyboard = createAskUserKeyboard(request.request_id, request.options);
-          await ctx.reply(`❓ ${request.question}`, { reply_markup: keyboard });
-          console.log(`[ASK-USER DEBUG] Buttons sent for request ${request.request_id}`);
+          const keyboard = createAskUserKeyboard(requestId, options);
+          await ctx.reply(`❓ ${question}`, { reply_markup: keyboard });
+          console.log(`[ASK-USER] UI displayed successfully`);
         } catch (error) {
-          console.error(`[ASK-USER DEBUG] Failed to send buttons:`, error);
-        }
-      });
-
-      // Register callback to display plan approval buttons immediately when created
-      this.planStateManager.onApprovalCreated(async (approval) => {
-        console.log(`[PLAN-APPROVAL DEBUG] onApprovalCreated fired for request ${approval.requestId}`);
-        try {
-          const { displayPlanApproval } = await import("./handlers/plan-approval");
-          await displayPlanApproval(ctx, approval.planFile, approval.planContent, approval.requestId);
-          console.log(`[PLAN-APPROVAL DEBUG] Approval UI displayed for ${approval.requestId}`);
-        } catch (error) {
-          console.error(`[PLAN-APPROVAL DEBUG] Failed to display approval UI:`, error);
+          console.error(`[ASK-USER] Failed to display UI:`, error);
+          throw error;
         }
       });
     }
@@ -255,6 +244,21 @@ class ClaudeSession {
     // Only create new manager for fresh sessions, otherwise keep existing state
     if (isNewSession) {
       this.planStateManager = new PlanStateManager(this.sessionId, true);
+    }
+
+    // Set plan approval display function - MUST be done after PlanStateManager is created/updated
+    if (ctx && chatId) {
+      this.planStateManager.setDisplayApprovalFn(async (planFile, planContent, requestId) => {
+        console.log(`[PLAN-APPROVAL] Displaying approval UI for ${requestId}`);
+        try {
+          const { displayPlanApproval } = await import("./handlers/plan-approval");
+          await displayPlanApproval(ctx, planFile, planContent, requestId);
+          console.log(`[PLAN-APPROVAL] Approval UI displayed successfully`);
+        } catch (error) {
+          console.error(`[PLAN-APPROVAL] Failed to display approval UI:`, error);
+          throw error;
+        }
+      });
     }
 
     // Build system prompt with plan mode if active
@@ -310,10 +314,16 @@ class ClaudeSession {
           return { behavior: "allow", updatedInput: toolInput };
         }
 
-        // Always allow our internal MCP tools (ask-user, plan-mode) without permission prompts
-        if (toolName.startsWith("mcp__ask-user__") || toolName.startsWith("mcp__plan-mode__")) {
+        // Always allow our internal MCP tools (plan-mode) without permission prompts
+        if (toolName.startsWith("mcp__plan-mode__")) {
           console.log(`[PERMISSION DEBUG] Auto-allowing internal MCP tool: ${toolName}`);
           return { behavior: "allow", updatedInput: toolInput };
+        }
+
+        // Handle built-in AskUserQuestion tool
+        if (toolName === "AskUserQuestion") {
+          console.log(`[ASK-USER] AskUserQuestion called`);
+          return await this.handleAskUserQuestion(toolInput, ctx, chatId);
         }
 
         // Serialize tool input for processing
@@ -640,6 +650,64 @@ class ClaudeSession {
   }
 
   /**
+   * Handle built-in AskUserQuestion tool.
+   * Processes 1-4 questions sequentially, displays UI via Telegram buttons, and collects answers.
+   */
+  private async handleAskUserQuestion(
+    input: any,
+    ctx: Context | undefined,
+    chatId: number | undefined
+  ): Promise<{ behavior: "allow"; updatedInput: any }> {
+    if (!ctx || !chatId) {
+      throw new Error("AskUserQuestion requires context and chatId");
+    }
+
+    const questions = input.questions || [];
+    if (questions.length === 0) {
+      throw new Error("AskUserQuestion called with no questions");
+    }
+
+    console.log(`[ASK-USER] Handling ${questions.length} question(s)`);
+    const answers: Record<string, string> = {};
+
+    // Handle each question sequentially
+    for (let i = 0; i < questions.length; i++) {
+      const q = questions[i];
+      const requestId = `askuser_${Date.now()}_${Math.random().toString(36).substring(7)}`;
+
+      console.log(`[ASK-USER] Processing question ${i + 1}/${questions.length}: "${q.question}"`);
+
+      // Extract option labels from the options array
+      const optionLabels = q.options.map((opt: any) => opt.label);
+
+      // Create request and wait for answer (display function already set in askUserStore)
+      // This will automatically add "Other" option and handle custom text input
+      const answer = await askUserStore.createWithPromise(
+        requestId,
+        chatId.toString(),
+        q.question,
+        optionLabels
+      );
+
+      console.log(`[ASK-USER] Answer for "${q.header}": ${answer}`);
+
+      // Store answer mapped by header
+      answers[q.header] = answer;
+    }
+
+    console.log(`[ASK-USER] All questions answered:`, answers);
+
+    // Return the updated input with answers in the format SDK expects
+    return {
+      behavior: "allow",
+      updatedInput: {
+        questions: input.questions,
+        answers: answers
+      }
+    };
+  }
+
+  /**
    * Handle plan approval response.
    * Delegates to PlanStateManager.
    * Returns: [success, message, shouldContinue]
@@ -659,13 +727,13 @@ class ClaudeSession {
 
     // Note: The actual state transition is done asynchronously in the callback handler
     // Here we just return the response synchronously
-    if (action === "accept") {
+    if (action.type === "accept") {
       const msg = `✅ <b>Plan Accepted</b>\n\nFile: <code>${approval.planFile}</code>`;
       return [true, msg, true];
-    } else if (action === "reject") {
+    } else if (action.type === "reject") {
       const msg = `❌ <b>Plan Rejected</b>\n\nFile: <code>${approval.planFile}</code>`;
       return [true, msg, false];
-    } else if (action === "clear") {
+    } else if (action.type === "clear") {
       const msg = `🗑️ <b>Context Cleared</b>\n\nFile: <code>${approval.planFile}</code>`;
       return [true, msg, false];
     }
