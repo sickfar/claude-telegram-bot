@@ -136,7 +136,7 @@ export function createStatusCallback(
         const preview =
           content.length > 500 ? content.slice(0, 500) + "..." : content;
         const escaped = escapeHtml(preview);
-        const thinkingMsg = await ctx.reply(`🧠 <i>${escaped}</i>`, {
+        const thinkingMsg = await ctx.reply(`🧠 <pre>${escaped}</pre>`, {
           parse_mode: "HTML",
         });
         state.toolMessages.push(thinkingMsg);

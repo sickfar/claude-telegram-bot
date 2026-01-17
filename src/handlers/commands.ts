@@ -24,6 +24,9 @@ import {
   isValidModelName,
   MODEL_IDS,
   type ModelName,
+  getThinkingLevel,
+  getThinkingLevelName,
+  setThinkingLevel,
 } from "../config";
 import { isAuthorized, validateProjectPath } from "../security";
 import { auditLog } from "../utils";
@@ -63,10 +66,10 @@ export async function handleStart(ctx: Context): Promise<void> {
       `/retry - Retry last message\n` +
       `/permissions - View/change permission mode\n` +
       `/model - Switch Claude model\n` +
+      `/thinking - Toggle extended thinking\n` +
       `/restart - Restart the bot\n\n` +
       `<b>Tips:</b>\n` +
       `• Prefix with <code>!</code> to interrupt current query\n` +
-      `• Use "think" keyword for extended reasoning\n` +
       `• Send photos, voice, or documents`,
     { parse_mode: "HTML" }
   );
@@ -590,6 +593,88 @@ export async function handleModel(ctx: Context): Promise<void> {
 
   await ctx.reply(
     `Model switched to <b>${requestedModel}</b> (${MODEL_IDS[requestedModel]})`,
+    { parse_mode: "HTML" }
+  );
+}
+
+/**
+ * /thinking - Toggle or view extended thinking mode.
+ */
+export async function handleThinking(ctx: Context): Promise<void> {
+  const chatId = ctx.chat?.id;
+  if (!chatId) return;
+
+  const userId = ctx.from?.id;
+  const username = ctx.from?.username || "unknown";
+
+  if (!isAuthorized(userId, ALLOWED_USERS)) {
+    await ctx.reply("Unauthorized.");
+    return;
+  }
+
+  const args = ctx.message?.text?.split(" ").slice(1) || [];
+  const requestedLevel = args[0]?.toLowerCase();
+
+  // No arguments: show inline keyboard with options
+  if (!requestedLevel) {
+    const currentLevel = getThinkingLevel();
+    const currentName = getThinkingLevelName();
+
+    // Create inline keyboard with thinking options
+    const keyboard = new InlineKeyboard()
+      .text("🚫 Off (0 tokens)", "thinking:0")
+      .row()
+      .text("💭 Normal (10k tokens)", "thinking:10000")
+      .row()
+      .text("🧠 Deep (50k tokens)", "thinking:50000");
+
+    await ctx.reply(
+      `Current thinking level: <b>${currentName}</b> (${currentLevel} tokens)\n\nSelect thinking level:`,
+      {
+        parse_mode: "HTML",
+        reply_markup: keyboard
+      }
+    );
+    return;
+  }
+
+  // Parse level from argument
+  let level: number;
+  if (requestedLevel === "off") {
+    level = 0;
+  } else if (requestedLevel === "normal") {
+    level = 10000;
+  } else if (requestedLevel === "deep") {
+    level = 50000;
+  } else {
+    await ctx.reply(
+      `Invalid level: <b>${requestedLevel}</b>\n\n` +
+      `Available levels: off, normal, deep`,
+      { parse_mode: "HTML" }
+    );
+    return;
+  }
+
+  const success = setThinkingLevel(level);
+
+  if (!success) {
+    await ctx.reply(
+      "Failed to set thinking level.",
+      { parse_mode: "HTML" }
+    );
+    return;
+  }
+
+  const levelName = getThinkingLevelName();
+  auditLog(
+    chatId,
+    username,
+    `thinking_level`,
+    levelName
+  );
+
+  await ctx.reply(
+    `Thinking level set to <b>${levelName}</b> (${level} tokens)`,
     { parse_mode: "HTML" }
   );
 }

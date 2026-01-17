@@ -46,8 +46,8 @@ class AskUserStore {
     question: string,
     options: string[]
   ): Promise<string> {
-    // Always add "Other" option for custom input
-    const optionsWithOther = [...options, "Other"];
+    // Always add "Custom answer..." option for custom input
+    const optionsWithOther = [...options, "Custom answer..."];
 
     const request: AskUserRequest = {
       request_id: requestId,

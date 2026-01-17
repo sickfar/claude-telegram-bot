@@ -13,6 +13,7 @@ export {
   handleProject,
   handlePermissionsCommand,
   handleModel,
+  handleThinking,
   handlePlan,
   handleCode,
 } from "./commands";

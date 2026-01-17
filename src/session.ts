@@ -18,11 +18,11 @@ import {
   getSafetyPrompt,
   STREAMING_THROTTLE_MS,
   TEMP_PATHS,
-  THINKING_DEEP_KEYWORDS,
-  THINKING_KEYWORDS,
   getWorkingDir,
   getPermissionMode,
   getModel,
+  getThinkingLevel,
+  getThinkingLevelName,
   PLAN_MODE,
   getPlanStateFile,
   isExitPlanModeTool,
@@ -47,26 +47,6 @@ import { permissionStore } from "./permission-store";
 import { askUserStore } from "./ask-user-store";
 import { checkCommandSafety, isPathAllowed } from "./security";
 import type { SessionData, StatusCallback, TokenUsage } from "./types";
-
-/**
- * Determine thinking token budget based on message keywords.
- */
-function getThinkingLevel(message: string): number {
-  const msgLower = message.toLowerCase();
-
-  // Check deep thinking triggers first (more specific)
-  if (THINKING_DEEP_KEYWORDS.some((k) => msgLower.includes(k))) {
-    return 50000;
-  }
-
-  // Check normal thinking triggers
-  if (THINKING_KEYWORDS.some((k) => msgLower.includes(k))) {
-    return 10000;
-  }
-
-  // Default: no thinking
-  return 0;
-}
 
 /**
  * Extract text content from SDK message.
@@ -227,10 +207,8 @@ class ClaudeSession {
     }
 
     const isNewSession = !this.isActive;
-    const thinkingTokens = getThinkingLevel(message);
-    const thinkingLabel =
-      { 0: "off", 10000: "normal", 50000: "deep" }[thinkingTokens] ||
-      String(thinkingTokens);
+    const thinkingTokens = getThinkingLevel();
+    const thinkingLabel = getThinkingLevelName();
 
     // Check for pending plan injection
     let messageToSend = message;

@@ -30,6 +30,10 @@ const ALLOW_TELEGRAM_MODEL_MODE = process.env.ALLOW_TELEGRAM_MODEL_MODE !== "fal
 
 let currentModel: ModelName = MODEL_DEFAULT;
 
+// Thinking configuration
+const THINKING_DEFAULT: number = parseInt(process.env.THINKING_DEFAULT || "10000", 10);
+let currentThinkingLevel: number = THINKING_DEFAULT;
+
 // Ensure necessary paths are available for Claude's bash commands
 // LaunchAgents don't inherit the full shell environment
 const EXTRA_PATHS = [
@@ -97,6 +101,7 @@ function savePersistentConfig(): void {
     const config = {
       working_dir: currentWorkingDir,
       model: currentModel,
+      thinking_level: currentThinkingLevel,
       saved_at: new Date().toISOString(),
     };
     Bun.write(PERSISTENT_CONFIG_FILE, JSON.stringify(config, null, 2));
@@ -141,6 +146,16 @@ function loadPersistentConfig(): void {
                 console.log(`✓ Restored model: ${currentModel}`);
               } else {
                 console.log(`✗ Invalid model in config: ${config.model}, using default`);
+              }
+            }
+
+            // Restore thinking level if present
+            if (typeof config.thinking_level === "number") {
+              if ([0, 10000, 50000].includes(config.thinking_level)) {
+                currentThinkingLevel = config.thinking_level;
+                console.log(`✓ Restored thinking level: ${currentThinkingLevel}`);
+              } else {
+                console.log(`✗ Invalid thinking_level in config: ${config.thinking_level}, using default`);
               }
             }
 
@@ -324,20 +339,6 @@ export const TRANSCRIPTION_PROMPT = TRANSCRIPTION_CONTEXT
 
 export const TRANSCRIPTION_AVAILABLE = !!OPENAI_API_KEY;
 
-// ============== Thinking Keywords ==============
-
-const thinkingKeywordsStr =
-  process.env.THINKING_KEYWORDS || "think,pensa,ragiona";
-const thinkingDeepKeywordsStr =
-  process.env.THINKING_DEEP_KEYWORDS || "ultrathink,think hard,pensa bene";
-
-export const THINKING_KEYWORDS = thinkingKeywordsStr
-  .split(",")
-  .map((k) => k.trim().toLowerCase());
-export const THINKING_DEEP_KEYWORDS = thinkingDeepKeywordsStr
-  .split(",")
-  .map((k) => k.trim().toLowerCase());
-
 // ============== Media Group Settings ==============
 
 export const MEDIA_GROUP_TIMEOUT = 1000; // ms to wait for more photos in a group
@@ -466,6 +467,30 @@ export function isValidModelName(name: string): name is ModelName {
 
 export { MODEL_IDS };
 
+// ============== Thinking Management ==============
+
+export function getThinkingLevel(): number {
+  return currentThinkingLevel;
+}
+
+export function setThinkingLevel(level: number): boolean {
+  if (![0, 10000, 50000].includes(level)) {
+    return false;
+  }
+  currentThinkingLevel = level;
+  savePersistentConfig();
+  return true;
+}
+
+export function getThinkingLevelName(): string {
+  const levelMap: Record<number, string> = {
+    0: "off",
+    10000: "normal",
+    50000: "deep",
+  };
+  return levelMap[currentThinkingLevel] || "unknown";
+}
+
 console.log(
-  `Config loaded: ${ALLOWED_USERS.length} allowed users, projects root: ${PROJECTS_ROOT}, current dir: ${currentWorkingDir}, permission mode: ${currentPermissionMode}, model: ${currentModel}`
+  `Config loaded: ${ALLOWED_USERS.length} allowed users, projects root: ${PROJECTS_ROOT}, current dir: ${currentWorkingDir}, permission mode: ${currentPermissionMode}, model: ${currentModel}, thinking: ${getThinkingLevelName()}`
 );

@@ -11,6 +11,8 @@ import {
   setModel,
   isValidModelName,
   MODEL_IDS,
+  setThinkingLevel,
+  getThinkingLevelName,
 } from "../config";
 import { isAuthorized } from "../security";
 import { auditLog, startTypingIndicator } from "../utils";
@@ -63,6 +65,12 @@ export async function handleCallback(ctx: Context): Promise<void> {
     // Check for model callback
     if (callbackData.startsWith("model:")) {
       await handleModelCallback(ctx, callbackData, chatId);
+      return;
+    }
+
+    // Check for thinking callback
+    if (callbackData.startsWith("thinking:")) {
+      await handleThinkingCallback(ctx, callbackData, chatId);
       return;
     }
 
@@ -363,6 +371,56 @@ async function handleModelCallback(
 
   await ctx.answerCallbackQuery({
     text: `Switched to ${requestedModel}`,
+  });
+}
+
+/**
+ * Handle thinking level selection callback.
+ */
+async function handleThinkingCallback(
+  ctx: Context,
+  callbackData: string,
+  chatId: number
+): Promise<void> {
+  const parts = callbackData.split(":");
+  if (parts.length !== 2) {
+    await ctx.answerCallbackQuery({ text: "Invalid callback data" });
+    return;
+  }
+
+  const requestedLevel = parseInt(parts[1]!, 10);
+
+  // Validate thinking level
+  if (![0, 10000, 50000].includes(requestedLevel)) {
+    await ctx.answerCallbackQuery({ text: "Invalid thinking level" });
+    return;
+  }
+
+  // Set the thinking level
+  const success = setThinkingLevel(requestedLevel);
+
+  if (!success) {
+    await ctx.editMessageText(
+      `Failed to set thinking level.`,
+      { parse_mode: "HTML" }
+    );
+    await ctx.answerCallbackQuery({ text: "Failed to set thinking level" });
+    return;
+  }
+
+  // Update message to show selection
+  const levelName = getThinkingLevelName();
+  await ctx.editMessageText(
+    `✅ Thinking level set to <b>${levelName}</b> (${requestedLevel} tokens)`,
+    { parse_mode: "HTML" }
+  );
+
+  // Log the change
+  const username = ctx.from?.username || "unknown";
+  auditLog(chatId, username, "thinking_level", levelName);
+
+  await ctx.answerCallbackQuery({
+    text: `Set to ${levelName}`,
   });
 }
 

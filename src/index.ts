@@ -19,6 +19,7 @@ import {
   handleProject,
   handlePermissionsCommand,
   handleModel,
+  handleThinking,
   handlePlan,
   handleCode,
   handleText,
@@ -76,6 +77,7 @@ bot.command("retry", handleRetry);
 bot.command("project", handleProject);
 bot.command("permissions", handlePermissionsCommand);
 bot.command("model", handleModel);
+bot.command("thinking", handleThinking);
 bot.command("plan", handlePlan);
 bot.command("code", handleCode);
 
@@ -128,6 +130,7 @@ await bot.api.setMyCommands([
   { command: "retry", description: "Retry last message" },
   { command: "permissions", description: "View/change permission mode" },
   { command: "model", description: "Switch Claude model" },
+  { command: "thinking", description: "Toggle extended thinking" },
   { command: "restart", description: "Restart the bot" },
 ]);
 
