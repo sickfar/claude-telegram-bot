@@ -13,7 +13,7 @@ A Telegram bot that provides a complete interface to Claude Code's powerful AI c
 
 This is my personal fork of [linuz90/claude-telegram-bot](https://github.com/linuz90/claude-telegram-bot), significantly rewritten and extended for my development workflow. While the original focused on general-purpose assistance, this version is laser-focused on software development and coding workflows.
 
-Built with Bun and TypeScript (~8,500 lines), it provides full access to Claude Code's capabilities through Telegram, enabling mobile-first development workflows.
+Built with Bun and TypeScript (~9,500 lines), it provides full access to Claude Code's capabilities through Telegram, enabling mobile-first development workflows.
 
 **Status:** Under active development. Expect frequent updates and changes.
 
@@ -31,6 +31,7 @@ Built with Bun and TypeScript (~8,500 lines), it provides full access to Claude 
 - 🧠 **Extended thinking**: Configure Claude's reasoning depth with `/thinking` (off, normal, deep)
 - 📋 **Plan mode**: Explore codebases and design approaches before making changes
 - 🔀 **Project switching**: Switch between projects dynamically with `/project`
+- 📸 **Screenshots & screen recording**: Capture windows or record screen directly from Telegram
 - 🔘 **Interactive buttons**: Claude can present options as tappable Telegram buttons
 - 📤 **File delivery**: Claude can send files directly to your Telegram chat via MCP tool
 - 🔐 **Permission system**: Fine-grained control with bypass/interactive modes
@@ -64,6 +65,8 @@ bun run start
 - **Telegram Bot Token** from [@BotFather](https://t.me/BotFather)
 - **Claude Code auth** or **Anthropic API key**
 - **OpenAI API key** (optional, for voice transcription - Mac uses local Dictation by default)
+- **ffmpeg** (optional, for screen recording) - `brew install ffmpeg`
+- **pdftotext** (optional, for PDF parsing) - `brew install poppler`
 
 ### Claude Authentication
 
@@ -207,22 +210,24 @@ Add your own MCP servers to extend Claude's capabilities.
 
 ## Commands
 
-| Command        | Description                                                    |
-| -------------- | -------------------------------------------------------------- |
-| `/start`       | Show status and your user ID                                   |
-| `/new`         | Start a fresh session                                          |
-| `/plan`        | Send a message in plan mode (read-only exploration)            |
-| `/code`        | Exit plan mode and proceed with implementation                 |
-| `/project`     | Switch to a different project directory                        |
-| `/resume`      | Resume last session after restart                              |
-| `/stop`        | Interrupt current query                                        |
-| `/status`      | Check what Claude is doing                                     |
-| `/restart`     | Restart the bot                                                |
-| `/retry`       | Retry the last message                                         |
-| `/permissions` | View or change permission mode (interactive vs bypass)         |
-| `/thinking`    | Toggle extended thinking mode on/off                           |
-| `/model`       | Switch Claude model (opus, sonnet, haiku)                      |
-| `/voicelocale` | Set voice recognition locale (e.g., en-US, ru-RU)              |
+| Command            | Description                                                    |
+| ------------------ | -------------------------------------------------------------- |
+| `/start`           | Show status and your user ID                                   |
+| `/new`             | Start a fresh session                                          |
+| `/plan`            | Send a message in plan mode (read-only exploration)            |
+| `/code`            | Exit plan mode and proceed with implementation                 |
+| `/project`         | Switch to a different project directory                        |
+| `/resume`          | Resume last session after restart                              |
+| `/stop`            | Interrupt current query                                        |
+| `/status`          | Check what Claude is doing                                     |
+| `/restart`         | Restart the bot                                                |
+| `/retry`           | Retry the last message                                         |
+| `/permissions`     | View or change permission mode (interactive vs bypass)         |
+| `/thinking`        | Toggle extended thinking mode on/off                           |
+| `/model`           | Switch Claude model (opus, sonnet, haiku)                      |
+| `/voicelocale`     | Set voice recognition locale (e.g., en-US, ru-RU)              |
+| `/screenshot`      | Capture a screenshot of full screen or specific window         |
+| `/screencap <dur>` | Record screen or window for duration (e.g., `/screencap 30s`)  |
 
 ## Plan Mode
 
@@ -250,6 +255,51 @@ Plan mode is great for:
 - Designing approaches before coding
 - Getting a second opinion before refactoring
 - Complex features requiring careful planning
+
+## Screen Recording & Screenshots
+
+Capture your screen or specific windows directly from Telegram:
+
+### Screenshots
+
+```
+/screenshot
+```
+
+Presents a menu of all open windows. Select one to capture an instant screenshot. Useful for:
+- Sharing UI states with Claude for debugging
+- Documenting visual bugs
+- Capturing error dialogs
+
+### Screen Recording
+
+```
+/screencap 30s   # Record for 30 seconds
+/screencap 5m    # Record for 5 minutes
+/screencap 1h    # Error: max duration is 10 minutes
+```
+
+**Duration formats:**
+- `30s` - seconds (1-600)
+- `5m` - minutes (1-10)
+- `1h` - hours (max 10m due to Telegram's 50MB file limit)
+
+**Features:**
+- Select full screen or specific window
+- Window automatically brought to front
+- Retina display support (correct scaling)
+- Async recording (continue chatting with Claude while recording)
+- MP4 output with H.264 codec
+- 30fps, optimized for file size
+
+**Requirements:**
+- `ffmpeg` - Install: `brew install ffmpeg`
+- Screen Recording permission (System Settings > Privacy & Security > Screen Recording)
+
+**Tips:**
+- Keep recordings under 5 minutes to avoid large files
+- The selected window/app is activated automatically before recording
+- Recording continues in the background - you'll be notified when complete
 
 ## Project Switching
 
@@ -374,6 +424,20 @@ Protection layers:
 - Check MCP server dependencies are installed
 - Look for MCP errors in logs
 
+**Screen recording fails**
+
+- Install ffmpeg: `brew install ffmpeg`
+- Grant Screen Recording permission: System Settings > Privacy & Security > Screen Recording
+- Add Terminal (or your bot runner) to the allowed apps
+- Restart the bot after granting permissions
+- Check that the selected window hasn't been closed or minimized
+
+**Retina display issues (wrong crop size)**
+
+- The bot automatically detects Retina displays and scales coordinates
+- If detection fails, recordings default to 2x scaling (safe for most Macs)
+- Check `system_profiler SPDisplaysDataType` shows correct display info
+
 ## Runtime Files
 
 - `~/.sickfar/sessions/` - Session persistence for `/resume`
@@ -399,6 +463,7 @@ Originally forked from [linuz90/claude-telegram-bot](https://github.com/linuz90/
 - Model switching (opus/sonnet/haiku)
 - Extended thinking mode
 - Project switching
+- Screen recording and screenshots with Retina support
 
 ## License
 

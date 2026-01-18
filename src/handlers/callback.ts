@@ -86,6 +86,12 @@ export async function handleCallback(ctx: Context): Promise<void> {
       return;
     }
 
+    // Check for screencap callback
+    if (callbackData.startsWith("screencap:")) {
+      await handleScreencapCallback(ctx, callbackData, chatId, username);
+      return;
+    }
+
     await ctx.answerCallbackQuery();
     return;
   }
@@ -633,5 +639,328 @@ async function handleScreenshotCallback(
     await ctx.reply(
       "Failed to capture screenshot. Check Screen Recording permissions in System Settings > Privacy & Security."
     );
+  }
+}
+
+/**
+ * Handle screencap callback (window/screen selection).
+ */
+async function handleScreencapCallback(
+  ctx: Context,
+  callbackData: string,
+  chatId: number,
+  username: string | undefined
+): Promise<void> {
+  const parts = callbackData.split(":");
+  const requestId = parts[1]!;
+  const selection = parts[2]!;
+
+  const { getRequest, removeRequest } = await import("../screencap-store");
+  const request = getRequest(requestId);
+
+  if (!request) {
+    await ctx.answerCallbackQuery({ text: "Request expired" });
+    await ctx.editMessageText("Selection expired. Use /screencap again.");
+    return;
+  }
+
+  // Handle cancel
+  if (selection === "cancel") {
+    removeRequest(requestId);
+    await ctx.deleteMessage();
+    await ctx.answerCallbackQuery({ text: "Cancelled" });
+    return;
+  }
+
+  const duration = request.duration;
+
+  // Start recording
+  if (selection === "screen") {
+    await startScreenRecording(chatId, requestId, duration);
+    await ctx.editMessageText(`🎥 Recording full screen for ${Math.round(duration)}s...`);
+  } else {
+    const index = parseInt(selection);
+    const window = request.windows[index];
+    if (!window) {
+      await ctx.answerCallbackQuery({ text: "Invalid window" });
+      return;
+    }
+
+    await startWindowRecording(chatId, requestId, duration, window);
+    await ctx.editMessageText(
+      `🎥 Recording: ${window.appName} - ${window.title}\nDuration: ${Math.round(duration)}s`
+    );
+  }
+
+  removeRequest(requestId);
+  await ctx.answerCallbackQuery({ text: "Recording started" });
+  auditLog(chatId, username || "unknown", "screencap_start", selection);
+}
+
+/**
+ * Start full screen recording.
+ */
+async function startScreenRecording(
+  chatId: number,
+  requestId: string,
+  duration: number
+): Promise<void> {
+  const timestamp = Date.now();
+  const filePath = `/tmp/telegram-bot/screencap_${timestamp}.mp4`;
+
+  const proc = Bun.spawn(
+    [
+      "ffmpeg",
+      "-f",
+      "avfoundation",
+      "-capture_cursor",
+      "1",
+      "-r",
+      "30",
+      "-i",
+      "Capture screen 0",
+      "-t",
+      duration.toString(),
+      "-c:v",
+      "libx264",
+      "-preset",
+      "ultrafast",
+      "-crf",
+      "23",
+      "-pix_fmt",
+      "yuv420p",
+      "-movflags",
+      "+faststart",
+      filePath,
+    ],
+    {
+      stderr: "pipe",
+    }
+  );
+
+  const { storeRecording } = await import("../screencap-store");
+  storeRecording({
+    chatId,
+    requestId,
+    filePath,
+    duration,
+    targetType: "screen",
+    startTime: timestamp,
+    process: proc,
+  });
+
+  // Handle completion
+  handleRecordingCompletion(chatId, proc);
+}
+
+/**
+ * Bring window to front using AppleScript.
+ */
+async function activateWindow(appName: string): Promise<void> {
+  try {
+    await Bun.spawn(["osascript", "-e", `tell application "${appName}" to activate`], {
+      stdout: "ignore",
+      stderr: "ignore",
+    }).exited;
+    // Wait a bit for the window to come to front
+    await Bun.sleep(500);
+  } catch (error) {
+    console.warn(`Failed to activate window for ${appName}:`, error);
+    // Continue anyway - recording will still work even if activation fails
+  }
+}
+
+/**
+ * Get display scale factor (2 for Retina, 1 for non-Retina).
+ * node-screenshots returns logical points, but ffmpeg needs physical pixels.
+ */
+async function getDisplayScaleFactor(): Promise<number> {
+  try {
+    // Query main display resolution vs backing resolution
+    const result = await Bun.spawn([
+      "system_profiler",
+      "SPDisplaysDataType",
+      "-json",
+    ], {
+      stdout: "pipe",
+    });
+
+    const output = await new Response(result.stdout).text();
+    const data = JSON.parse(output);
+
+    // Check if Retina (UI Looks like vs Resolution will differ on Retina)
+    const displays = data?.SPDisplaysDataType?.[0]?.spdisplays_ndrvs || [];
+    for (const display of displays) {
+      if (display._spdisplays_main === "spdisplays_yes") {
+        // If it has a Retina flag or the resolution suggests 2x scaling
+        if (display._spdisplays_retina === "spdisplays_yes") {
+          return 2;
+        }
+      }
+    }
+
+    // Default to 2 for modern Macs (most have Retina)
+    return 2;
+  } catch (error) {
+    console.warn("Failed to detect display scale factor, assuming Retina (2x):", error);
+    // Default to 2x for Retina displays (safe assumption for modern Macs)
+    return 2;
+  }
+}
+
+/**
+ * Start window recording.
+ */
+async function startWindowRecording(
+  chatId: number,
+  requestId: string,
+  duration: number,
+  window: any
+): Promise<void> {
+  // Bring window to front before recording
+  await activateWindow(window.appName);
+
+  const timestamp = Date.now();
+  const filePath = `/tmp/telegram-bot/screencap_${timestamp}.mp4`;
+
+  // Get display scale factor for Retina displays
+  const scaleFactor = await getDisplayScaleFactor();
+
+  // Convert logical points to physical pixels
+  const physicalX = Math.round(window.x * scaleFactor);
+  const physicalY = Math.round(window.y * scaleFactor);
+  const physicalWidth = Math.round(window.width * scaleFactor);
+  const physicalHeight = Math.round(window.height * scaleFactor);
+
+  const proc = Bun.spawn(
+    [
+      "ffmpeg",
+      "-f",
+      "avfoundation",
+      "-capture_cursor",
+      "1",
+      "-r",
+      "30",
+      "-i",
+      "Capture screen 0",
+      "-t",
+      duration.toString(),
+      "-filter:v",
+      `crop=${physicalWidth}:${physicalHeight}:${physicalX}:${physicalY}`,
+      "-c:v",
+      "libx264",
+      "-preset",
+      "ultrafast",
+      "-crf",
+      "23",
+      "-pix_fmt",
+      "yuv420p",
+      "-movflags",
+      "+faststart",
+      filePath,
+    ],
+    {
+      stderr: "pipe",
+    }
+  );
+
+  const { storeRecording } = await import("../screencap-store");
+  storeRecording({
+    chatId,
+    requestId,
+    filePath,
+    duration,
+    targetType: "window",
+    windowInfo: {
+      x: physicalX,
+      y: physicalY,
+      width: physicalWidth,
+      height: physicalHeight,
+    },
+    startTime: timestamp,
+    process: proc,
+  });
+
+  handleRecordingCompletion(chatId, proc);
+}
+
+/**
+ * Handle recording completion (async).
+ */
+async function handleRecordingCompletion(chatId: number, proc: any): Promise<void> {
+  const exitCode = await proc.exited;
+
+  const { getRecording, removeRecording } = await import("../screencap-store");
+  const recording = getRecording(chatId);
+
+  if (!recording) return;
+
+  try {
+    if (exitCode !== 0) {
+      const stderr = await new Response(proc.stderr).text();
+
+      let errorMsg = "❌ Recording failed.";
+      if (
+        stderr.includes("Operation not permitted") ||
+        stderr.includes("Input/output error")
+      ) {
+        errorMsg =
+          "❌ Screen recording permission denied.\n\n" +
+          "Grant permission in:\n" +
+          "System Settings > Privacy & Security > Screen Recording";
+      }
+
+      const { bot } = await import("../index");
+      await bot.api.sendMessage(chatId, errorMsg);
+
+      await cleanupRecording(recording);
+      removeRecording(chatId);
+      return;
+    }
+
+    // Check file size
+    const fileSize = await Bun.file(recording.filePath).size;
+    const sizeMB = fileSize / (1024 * 1024);
+
+    if (sizeMB > 50) {
+      const { bot } = await import("../index");
+      await bot.api.sendMessage(
+        chatId,
+        `❌ Video exceeds 50MB limit (${sizeMB.toFixed(1)}MB). Try shorter duration.`
+      );
+      await cleanupRecording(recording);
+      removeRecording(chatId);
+      return;
+    }
+
+    // Send video
+    const { bot } = await import("../index");
+    const { InputFile } = await import("grammy");
+
+    const fileBuffer = await Bun.file(recording.filePath).arrayBuffer();
+    const buffer = Buffer.from(fileBuffer);
+
+    await bot.api.sendVideo(chatId, new InputFile(buffer, "recording.mp4"), {
+      caption: `🎥 Screen recording (${Math.round(recording.duration)}s)`,
+    });
+
+    // Cleanup
+    await cleanupRecording(recording);
+    removeRecording(chatId);
+  } catch (error) {
+    console.error("Recording completion error:", error);
+    await cleanupRecording(recording);
+    removeRecording(chatId);
+  }
+}
+
+/**
+ * Cleanup recording temp file.
+ */
+async function cleanupRecording(recording: any): Promise<void> {
+  try {
+    await Bun.$`rm -f ${recording.filePath}`.quiet();
+  } catch (e) {
+    console.warn(`Failed to cleanup ${recording.filePath}:`, e);
   }
 }

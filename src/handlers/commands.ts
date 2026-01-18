@@ -32,6 +32,7 @@ import {
 } from "../config";
 import { isAuthorized, validateProjectPath } from "../security";
 import { auditLog } from "../utils";
+import type { Window } from "node-screenshots";
 
 /**
  * /start - Show welcome message and status.
@@ -916,6 +917,57 @@ export async function handleCode(ctx: Context): Promise<void> {
 }
 
 /**
+ * Parse duration string (e.g., "30s", "5m", "1h") to seconds.
+ * Returns null if invalid or out of range (1s to 10m).
+ */
+function parseDuration(input: string): number | null {
+  const match = input.match(/^(\d+(?:\.\d+)?)(s|m|h)$/i);
+  if (!match) return null;
+
+  const value = parseFloat(match[1]!);
+  const unit = match[2]!.toLowerCase();
+
+  let seconds = unit === "s" ? value : unit === "m" ? value * 60 : value * 3600;
+
+  // Validate: 1s to 10m (600s)
+  return seconds >= 1 && seconds <= 600 ? seconds : null;
+}
+
+/**
+ * Check if a window is capturable (visible, non-minimized, non-system).
+ */
+function isCapturableWindow(win: Window): boolean {
+  // Filter minimized
+  if (win.isMinimized) return false;
+
+  // Filter empty titles
+  if (win.title.trim().length === 0) return false;
+
+  // Filter tiny windows (< 100x100)
+  if (win.width < 100 || win.height < 100) return false;
+
+  // Filter system apps
+  const systemApps = [
+    "WindowServer",
+    "Dock",
+    "SystemUIServer",
+    "ControlCenter",
+    "NotificationCenter",
+    "Spotlight",
+  ];
+  if (systemApps.includes(win.appName)) return false;
+
+  return true;
+}
+
+/**
+ * Check if ffmpeg is available in PATH.
+ */
+function checkFFmpegAvailable(): boolean {
+  return !!Bun.which("ffmpeg");
+}
+
+/**
  * /screenshot - List open windows and capture screenshot of selected one.
  */
 export async function handleScreenshot(ctx: Context): Promise<void> {
@@ -931,8 +983,8 @@ export async function handleScreenshot(ctx: Context): Promise<void> {
     const { Window } = await import("node-screenshots");
     const { generateRequestId, storeWindows } = await import("../screenshot-store");
 
-    // Get all windows with non-empty titles
-    const allWindows = Window.all().filter((win) => win.title.length > 0);
+    // Get all capturable windows (visible, non-minimized, non-system)
+    const allWindows = Window.all().filter(isCapturableWindow);
 
     if (allWindows.length === 0) {
       await ctx.reply("No active windows found.");
@@ -965,6 +1017,88 @@ export async function handleScreenshot(ctx: Context): Promise<void> {
     });
   } catch (error) {
     console.error("Screenshot command error:", error);
+    await ctx.reply(
+      "Failed to get window list. Check Screen Recording permissions in System Settings > Privacy & Security."
+    );
+  }
+}
+
+/**
+ * /screencap <duration> - Record screen or window for specified duration.
+ */
+export async function handleScreencap(ctx: Context): Promise<void> {
+  const chatId = ctx.chat?.id;
+  const username = ctx.from?.username;
+  const userId = ctx.from?.id;
+
+  if (!chatId || !isAuthorized(userId, ALLOWED_USERS)) {
+    await ctx.reply("Unauthorized");
+    return;
+  }
+
+  // Parse duration
+  const args = ctx.message?.text?.split(" ") || [];
+  const durationArg = args[1];
+
+  if (!durationArg) {
+    await ctx.reply("Usage: /screencap <duration>\nExample: /screencap 30s");
+    return;
+  }
+
+  const duration = parseDuration(durationArg);
+  if (!duration) {
+    await ctx.reply(
+      "Invalid duration. Use: 30s, 5m, 1h\nRange: 1 second to 10 minutes"
+    );
+    return;
+  }
+
+  // Check ffmpeg
+  if (!checkFFmpegAvailable()) {
+    await ctx.reply("Screen recording requires ffmpeg.\nInstall: brew install ffmpeg");
+    return;
+  }
+
+  // Warn about large files
+  if (duration > 300) {
+    // 5 minutes
+    await ctx.reply(
+      `⚠️ Recording for ${Math.round(duration)}s may produce a large file.`
+    );
+  }
+
+  try {
+    // Dynamic import node-screenshots
+    const { Window } = await import("node-screenshots");
+
+    // Get capturable windows
+    const allWindows = Window.all().filter(isCapturableWindow);
+
+    // Store request
+    const { storeRequest } = await import("../screencap-store");
+    const requestId = storeRequest(allWindows, duration);
+
+    // Build keyboard
+    const keyboard = new InlineKeyboard();
+
+    keyboard.text("🖥 Full Screen", `screencap:${requestId}:screen`).row();
+
+    for (let i = 0; i < allWindows.length && i < 50; i++) {
+      const win = allWindows[i]!;
+      const label = `${win.appName} - ${win.title}`;
+      const truncated = label.length > 40 ? label.slice(0, 37) + "..." : label;
+      keyboard.text(truncated, `screencap:${requestId}:${i}`).row();
+    }
+
+    keyboard.text("❌ Cancel", `screencap:${requestId}:cancel`);
+
+    await ctx.reply(`🎥 Select what to record (${Math.round(duration)}s):`, {
+      reply_markup: keyboard,
+    });
+
+    auditLog(chatId, username || "unknown", "screencap_select", durationArg);
+  } catch (error) {
+    console.error("Screencap command error:", error);
     await ctx.reply(
       "Failed to get window list. Check Screen Recording permissions in System Settings > Privacy & Security."
     );

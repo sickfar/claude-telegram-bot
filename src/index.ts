@@ -24,6 +24,7 @@ import {
   handlePlan,
   handleCode,
   handleScreenshot,
+  handleScreencap,
   handleText,
   handleVoice,
   handlePhoto,
@@ -85,6 +86,7 @@ bot.command("voicelocale", handleVoiceLocale);
 bot.command("plan", handlePlan);
 bot.command("code", handleCode);
 bot.command("screenshot", handleScreenshot);
+bot.command("screencap", handleScreencap);
 
 // ============== Message Handlers ==============
 
